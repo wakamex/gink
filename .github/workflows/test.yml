@@ -1,0 +1,46 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test, and build for Linux and Windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.0
+      - name: Install protoc, and Rust's Windows target
+        run: |
+          sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          rustup update stable && rustup default stable
+          rustup target add x86_64-pc-windows-gnu
+      - name: Keep Cargo's downloads and builds between runs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            core/target
+          key: cargo-${{ hashFiles('core/Cargo.lock') }}
+      - name: Run the core's tests
+        working-directory: core
+        run: cargo test --locked -p signal-client -p signal-store -p gsignal_core
+      - name: Build the program and its driver for Linux
+        run: zig build
+      - name: Build the program for Windows from this system
+        run: zig build -Doptimize=ReleaseSmall -Dtarget=x86_64-windows-gnu -p zig-out/windows
+      - name: The live checks skip themselves without the test accounts
+        run: python3 -m unittest -v tests.test_signal_live

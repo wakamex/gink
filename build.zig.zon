@@ -1,0 +1,13 @@
+.{
+    .name = .gsignal,
+    .version = "0.0.0",
+    .fingerprint = 0x16b399434f225d1c,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .gesso = .{
+            .url = "git+https://github.com/wakamex/gesso?ref=main#71dad2cb8bea571b5afdf06f12ba0eb51e3e64d8",
+            .hash = "gesso-0.0.0-LFvUr_75SABf4z65Qo8JfKUo0BoZ2d3baxzdJDlp5A7g",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "README.md", "LICENSE", "src", "include", "core" },
+}

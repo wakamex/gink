@@ -1,0 +1,3 @@
+#!/bin/sh
+# The archiver to go with tools/zig-cc.
+exec "$GINK_ZIG" ar "$@"

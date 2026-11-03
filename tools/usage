@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Says which installed copies of gink are running, and when they were used, from the update server's log.
+
+    tools/usage [--days N] [HOST]
+
+HOST defaults to the server named in ~/.config/gink/publish-to, the place
+tools/publish-update publishes to; --days defaults to 7.
+
+The server's logs are read for every address builds have used: port 8070, then
+updates.waka.mx/gsignal/, now updates.waka.mx/gink/ (requests under /gsignal/ and /gink/). Each running copy looks for updates
+once a minute and says, in that request, a random number naming its installation, its build, and its window's state: hidden, shown behind others, in front, or in
+front and used (a key or the pointer within the last minute). So each request is a minute of the
+program running. Names for the numbers can be kept in ~/.config/gink/installs.txt, a line each of
+NUMBER NAME; a copy whose data folder is known shows its number in install.txt there.
+"""
+
+import argparse
+import collections
+import datetime
+import os
+import re
+import subprocess
+
+LINE = re.compile(r'^(\S+) \S+ \S+ \[([^\]]+)\] "GET (?:/gsignal|/gink)?/manifest\.txt\?install=([0-9a-f]{16})&build=([^&]+)&state=(\d)')
+STATES = ["hidden", "behind", "in front", "in use"]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("host", nargs="?", help="SSH host of the update server (by default the one in ~/.config/gink/publish-to)")
+    parser.add_argument("--days", type=int, default=7)
+    args = parser.parse_args()
+    if not args.host:
+        place = os.path.expanduser("~/.config/gink/publish-to")
+        if not os.path.exists(place) or ":" not in open(place).read():
+            parser.error("name the host, or put HOST:FOLDER in ~/.config/gink/publish-to")
+        args.host = open(place).read().strip().partition(":")[0]
+    log = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", args.host, "cd /var/log/nginx && (zcat -f $(ls -tr gsignal-updates.access.log* updates-waka.access.log*) 2>/dev/null)"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    names = {}
+    path = os.path.expanduser("~/.config/gink/installs.txt")
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                if line.strip():
+                    number, _, name = line.strip().partition(" ")
+                    names[number] = name
+    since = datetime.datetime.now().astimezone() - datetime.timedelta(days=args.days)
+    seen = collections.defaultdict(list)  # install -> [(time, build, state, address)]
+    for line in log.splitlines():
+        m = LINE.match(line)
+        if not m:
+            continue
+        when = datetime.datetime.strptime(m[2], "%d/%b/%Y:%H:%M:%S %z").astimezone()
+        if when >= since:
+            seen[m[3]].append((when, m[4], int(m[5]), m[1]))
+    if not seen:
+        print(f"No copy has looked for updates in the last {args.days} days.")
+        return
+    now = datetime.datetime.now().astimezone()
+    for rows in seen.values():  # (the two logs interleave in time)
+        rows.sort(key=lambda row: row[0])
+    for install, rows in sorted(seen.items(), key=lambda kv: -kv[1][-1][0].timestamp()):
+        last, build, state, address = rows[-1]
+        ago = (now - last).total_seconds()
+        running = f"running, {STATES[state]}" if ago < 150 else f"last seen {last:%a %d %b %H:%M} ({ago / 3600:.1f} h ago)"
+        print(f"{names.get(install, install)}: {running}; build {build}; from {address}")
+        days = collections.defaultdict(lambda: [0, 0, 0])  # day -> minutes running, in front, in use
+        for when, _, state, _ in rows:
+            day = days[when.date()]
+            day[0] += 1
+            day[1] += state >= 2
+            day[2] += state == 3
+        for day, (on, front, used) in sorted(days.items()):
+            print(f"  {day:%a %d %b}: running {on / 60:.1f} h, in front {front / 60:.1f} h, in use {used} min")
+
+
+if __name__ == "__main__":
+    main()

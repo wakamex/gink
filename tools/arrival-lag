@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Tracks how much sooner or later gink receives each message than Signal Desktop on the same Windows machine.
+
+    tools/arrival-lag collect [SSH_HOST]   reads both programs' records there and adds them to the store here
+    tools/arrival-lag report [--since DAYS] [--messages]   prints the figures from the store
+
+gink writes the time it stores each message to arrivals.txt in its data folder; Signal Desktop
+writes its own to its log, which it keeps for a few days, so `collect` has to run more often than
+that (a systemd user timer runs it hourly). deskrun runs the reading on the machine
+without opening a window. The store holds times alone, in ~/.local/share/gink/arrival-lag.tsv,
+or the file named by GINK_ARRIVAL_LAG.
+
+A message is compared when both programs were caught up as it arrived: each says when it begins to
+connect and when it has emptied the queue the service held for it, and a message stored between
+those two is one it fetched late for having been closed or cut off, counted apart.
+"""
+
+import argparse
+import bisect
+import os
+import statistics
+import subprocess
+import sys
+import time
+
+STORE = os.environ.get("GINK_ARRIVAL_LAG", os.path.expanduser("~/.local/share/gink/arrival-lag.tsv"))
+READER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "arrival_lag_windows.py")
+
+
+def stored():
+    if not os.path.exists(STORE):
+        return set()
+    with open(STORE) as f:
+        return {tuple(line.rstrip("\n").split("\t")) for line in f if line.strip()}
+
+
+def collect(host):
+    command = ["deskrun", "run", "--host", host, "--space", "gink", "--timeout", "120", "--put", READER, "--", "python", "arrival_lag_windows.py"]
+    out = subprocess.run(command, capture_output=True, text=True)
+    if out.returncode:
+        sys.exit(f"reading on {host} failed ({out.returncode}): {out.stderr.strip()[-300:]}")
+    read = {tuple(line.split("\t")) for line in out.stdout.splitlines() if line[:2] in ("G\t", "S\t") and len(line.split("\t")) == 4}
+    before = stored()
+    events = before | read
+    os.makedirs(os.path.dirname(STORE), exist_ok=True)
+    with open(STORE + ".new", "w") as f:
+        f.writelines("\t".join(e) + "\n" for e in sorted(events, key=lambda e: (int(e[2]), e)))
+    os.replace(STORE + ".new", STORE)
+    print(f"{len(events) - len(before)} new records, {len(events)} in {STORE}")
+
+
+def figures(values):
+    values = sorted(values)
+    at = lambda share: values[min(len(values) - 1, int(share * len(values)))]
+    return f"median {statistics.median(values) / 1000:.2f} s, 90% within {at(0.9) / 1000:.2f} s, largest {values[-1] / 1000:.1f} s"
+
+
+def report(since_days, each):
+    events = [e for e in stored() if not since_days or int(e[2]) >= (time.time() - since_days * 86400) * 1000]
+    first = {}  # (program, what, sent) -> the earliest time it happened
+    marks = {"G": [], "S": []}  # each program's (when, connecting or online), in order
+    for program, what, when, sent in events:
+        if what in ("connecting", "online"):
+            marks[program].append((int(when), what))
+        else:
+            key = (program, what, int(sent))
+            first[key] = min(first.get(key, int(when)), int(when))
+    for program in marks:
+        marks[program].sort()
+
+    def caught_up(program, when):
+        """Whether the program's last word before `when` was that it had emptied its queue; None
+        for a message gink held before it began recording its connections (its file then starts
+        with a mark at time 1)."""
+        at = bisect.bisect_right(marks[program], (when, "zzz")) - 1
+        if at >= 0 and marks[program][at][0] < 1000:
+            return None
+        return at >= 0 and marks[program][at][1] == "online"
+
+    pairs = sorted((sent, when, first[("S", "saved", sent)]) for (program, what, sent), when in first.items() if program == "G" and ("S", "saved", sent) in first)
+    gink_only = sum(1 for (program, what, sent) in first if program == "G" and ("S", "saved", sent) not in first)
+    signal_only = sum(1 for (program, what, sent) in first if (program, what) == ("S", "saved") and ("G", "message", sent) not in first)
+    if not pairs:
+        print(f"No message is recorded by both programs yet ({gink_only} by gink alone, {signal_only} by Signal Desktop alone).")
+        return
+    live = [(sent, g, s) for sent, g, s in pairs if caught_up("G", g) and caught_up("S", s)]
+    signal_late = [(sent, g, s) for sent, g, s in pairs if caught_up("G", g) and not caught_up("S", s)]
+    gink_late = [(sent, g, s) for sent, g, s in pairs if caught_up("G", g) is False]
+    earlier = [(sent, g, s) for sent, g, s in pairs if caught_up("G", g) is None and caught_up("S", s)]
+    day = lambda ms: time.strftime("%Y-%m-%d %H:%M", time.localtime(ms / 1000))
+    print(f"Messages recorded by both programs: {len(pairs)}, sent from {day(pairs[0][0])} to {day(pairs[-1][0])}.")
+    print("Lag is the time from gink storing a message to Signal Desktop storing it; a negative lag means Signal Desktop had it first.\n")
+    for title, group in ((f"Both programs caught up ({len(live)} messages)", live), (f"Before gink recorded its connections, so some of these it fetched late after being closed ({len(earlier)} messages)", earlier)):
+        if not group:
+            continue
+        lags = [s - g for _, g, s in group]
+        sooner = sum(1 for lag in lags if lag > 0)
+        print(f"{title}: gink first in {sooner} ({100 * sooner // len(group)}%)")
+        print(f"  lag: {figures(lags)}, smallest {min(lags) / 1000:.2f} s")
+        for limit in (1, 5, 30, 300):
+            print(f"  Signal Desktop more than {limit} s behind: {sum(1 for lag in lags if lag > limit * 1000)}; gink more than {limit} s behind: {sum(1 for lag in lags if lag < -limit * 1000)}")
+        taken = [(first[("S", "queued", sent)], g, s) for sent, g, s in group if ("S", "queued", sent) in first]
+        if taken:
+            print(f"  of that lag, Signal Desktop had the message off its connection this long after gink stored it ({len(taken)} messages): {figures([q - g for q, g, _ in taken])}")
+            print(f"  and then took this long to store it: {figures([s - q for q, _, s in taken])}")
+        print()
+    if signal_late:
+        print(f"Signal Desktop was closed or reconnecting, and fetched it afterwards ({len(signal_late)} messages): lag {figures([s - g for _, g, s in signal_late])}")
+    if gink_late:
+        print(f"\ngink was closed or reconnecting, and fetched it afterwards ({len(gink_late)} messages): lag {figures([s - g for _, g, s in gink_late])}")
+    print(f"\nRecorded by one program alone: {gink_only} by gink, {signal_only} by Signal Desktop.")
+    if each:
+        print("\nsent\tlag_s\tgink_s_after_sent\tsignal_s_after_sent\tboth_caught_up")
+        for sent, g, s in pairs:
+            print(f"{day(sent)}\t{(s - g) / 1000:.2f}\t{(g - sent) / 1000:.2f}\t{(s - sent) / 1000:.2f}\t{'yes' if caught_up('G', g) and caught_up('S', s) else 'no'}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("collect").add_argument("host", nargs="?", default="windows")
+    reporting = commands.add_parser("report")
+    reporting.add_argument("--since", type=float, default=0, metavar="DAYS")
+    reporting.add_argument("--messages", action="store_true", help="list every message's times as well")
+    args = parser.parse_args()
+    collect(args.host) if args.command == "collect" else report(args.since, args.messages)
+
+
+if __name__ == "__main__":
+    main()

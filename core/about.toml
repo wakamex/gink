@@ -1,0 +1,30 @@
+# Licences cargo-about may report for the core's crates, gathered into the third-party notice that
+# ships beside the program (tools/third-party-licenses).
+accepted = [
+    "AGPL-3.0-only",
+    "LGPL-2.1-or-later",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# The crate has no licence field of its own; it is part of the rusqlite fork it comes from, whose
+# LICENSE at the root of the repository is MIT.
+[sqlcipher-crypto-provider.clarify]
+license = "MIT"
+
+[[sqlcipher-crypto-provider.clarify.git]]
+path = "LICENSE"
+license = "MIT"
+checksum = "c10c1f27337546471e5f7e4e97fdd398b35b9d4e126115dcd22de8d8e65abf6f"

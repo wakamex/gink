@@ -1,0 +1,128 @@
+#!/usr/bin/env -S uv run --no-project --with cryptography python3
+"""Publishes a Windows build for installed copies of gink to fetch, which they do within a minute.
+
+    tools/publish-update                       build the current commit for Windows and publish it
+    tools/publish-update --bin DIR --to PLACE  publish the files in DIR to PLACE instead
+
+PLACE is HOST:FOLDER or a local folder: by default the one named in ~/.config/gink/publish-to,
+the folder served at the address in core/src/update.rs. It gets files/SHA256 for each file of the
+build, a manifest naming the build and each file's name, hash and size, the manifest's signature
+with the key in ~/.config/gink/update-signing.key, and gink-test-windows.zip of the same files for a first
+install, named as a test build, with index.html, the page that offers it and says that such a
+build updates itself and restarts. The files go up before the manifest, which goes up whole, so a copy never reads one
+that names a file not yet there. The build is the commit's short hash, so the tree must be clean,
+and the commit must be on the public main branch (origin/main), where the page links its source,
+as the program's licence asks.
+"""
+
+import argparse
+import hashlib
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import zipfile
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FILES = ["gink.exe", "ClankerTwemoji.ttf", "ClankerMono-Regular.ttf", "Inter-Regular.ttf",
+         "LICENSE", "NOTICE.md", "ClankerMono-LICENSE.txt", "Inter-LICENSE.txt", "THIRD-PARTY-LICENSES.md"]
+# FFmpeg is linked statically under the LGPL: its source is offered beside the download.
+FFMPEG = "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz"
+# The program was called gsignal: copies installed then start again after an update as gsignal.exe,
+# so the manifest offers the program under that name too, to copies that have it alone.
+FORMERLY = {"gsignal.exe": "gink.exe"}
+KEY = os.path.expanduser("~/.config/gink/update-signing.key")
+PLACE = os.path.expanduser("~/.config/gink/publish-to")
+SOURCE = "https://github.com/wakamex/gink"
+
+
+PAGE = """<!doctype html>
+<meta charset="utf-8">
+<title>gink test build {build}</title>
+<h1>gink test build {build}</h1>
+<p>This is a test build of gink, a desktop client for Signal. It updates itself: once you agree, on
+its first run, it looks for a new build every minute, puts it in place, and restarts when you have
+left it alone for two minutes. Each look also sends a random number for the installation, the build,
+and whether the window is open or in use; never an account, contacts or messages. The status bar
+turns updating off.</p>
+<p><a href="gink-test-windows.zip">gink-test-windows.zip</a>, for Windows: unpack it into a folder
+of its own and run gink.exe. gink is free software under the GNU Affero General Public License 3;
+the source of this build is <a href="{source}/tree/{build}">{source}/tree/{build}</a>, and the
+licences of what it is built from are in THIRD-PARTY-LICENSES.md inside the download. It links
+FFmpeg statically under the LGPL: <a href="ffmpeg-9.0.2.tar.xz">ffmpeg-9.0.2.tar.xz</a> is its source.</p>
+"""
+
+
+def run(*command, **kw):
+    subprocess.run(command, check=True, **kw)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--bin", help="publish the files in this folder, built already")
+    parser.add_argument("--build", help="the build they are (with --bin; by default the commit's short hash)")
+    parser.add_argument("--to", help="where to publish (by default the place in ~/.config/gink/publish-to)")
+    args = parser.parse_args()
+    if not args.to:
+        with open(PLACE) as f:
+            args.to = f.read().strip()
+    build = args.build
+    if not args.bin:
+        if subprocess.run(["git", "-C", ROOT, "diff", "--quiet", "HEAD"]).returncode:
+            sys.exit("the tree has changes that are not committed: a build is published from a commit")
+        # (its source must be public before its build is offered)
+        run("git", "-C", ROOT, "fetch", "-q", "origin", "main")
+        if subprocess.run(["git", "-C", ROOT, "merge-base", "--is-ancestor", "HEAD", "origin/main"]).returncode:
+            sys.exit("the commit is not on origin/main: push it first, so that the build's source is public")
+        build = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        env = {k: v for k, v in os.environ.items() if k != "GINK_BUILD"}
+        run("zig", "build", "-Doptimize=ReleaseSmall", "-Dtarget=x86_64-windows-gnu", "-p", "zig-out/windows", cwd=ROOT, env=env)
+    folder = args.bin or os.path.join(ROOT, "zig-out", "windows", "bin")
+    if not build:
+        sys.exit("--build is needed with --bin")
+    run(os.path.join(ROOT, "tools", "third-party-licenses"), os.path.join(folder, "THIRD-PARTY-LICENSES.md"))
+    with open(KEY, "rb") as f:
+        key = Ed25519PrivateKey.from_private_bytes(f.read())
+    with tempfile.TemporaryDirectory() as out:
+        os.makedirs(os.path.join(out, "files"))
+        lines = [f"build {build}"]
+        with zipfile.ZipFile(os.path.join(out, "gink-test-windows.zip"), "w", zipfile.ZIP_DEFLATED) as z:
+            for name in FILES + list(FORMERLY):
+                path = os.path.join(folder, FORMERLY.get(name, name))
+                with open(path, "rb") as f:
+                    data = f.read()
+                digest = hashlib.sha256(data).hexdigest()
+                shutil.copyfile(path, os.path.join(out, "files", digest))
+                lines.append(f"file {name} {digest} {len(data)}")
+                if name not in FORMERLY:
+                    z.write(path, name)
+        manifest = "\n".join(lines) + "\n"
+        with open(os.path.join(out, "index.html"), "w") as f:
+            f.write(PAGE.format(build=build, source=SOURCE))
+        with open(os.path.join(out, "manifest.txt"), "w") as f:
+            f.write(manifest)
+        with open(os.path.join(out, "manifest.sig"), "w") as f:
+            f.write(key.sign(manifest.encode()).hex() + "\n")
+        if ":" in args.to:
+            host, place = args.to.split(":", 1)
+            run("ssh", "-o", "BatchMode=yes", host, f"mkdir -p {place}/files {place}/next && cd {place} && (test -s {os.path.basename(FFMPEG)} || curl -fsSL -o {os.path.basename(FFMPEG)} {FFMPEG})")
+            run("scp", "-q", *[os.path.join(out, "files", d) for d in os.listdir(os.path.join(out, "files"))], f"{host}:{place}/files/")
+            run("scp", "-q", os.path.join(out, "manifest.txt"), os.path.join(out, "manifest.sig"), os.path.join(out, "gink-test-windows.zip"), os.path.join(out, "index.html"), f"{host}:{place}/next/")
+            # (the signature first, then the manifest it signs: one read between the two sees a
+            # mismatch and is tried again a minute later)
+            run("ssh", "-o", "BatchMode=yes", host, f"cd {place} && rm -f gsignal-windows.zip gsignal-test-windows.zip && mv next/index.html . && mv next/gink-test-windows.zip . && mv next/manifest.sig . && mv next/manifest.txt . && chmod -R a+rX {place}")
+        else:
+            os.makedirs(os.path.join(args.to, "files"), exist_ok=True)
+            for d in os.listdir(os.path.join(out, "files")):
+                shutil.copyfile(os.path.join(out, "files", d), os.path.join(args.to, "files", d))
+            for name in ("index.html", "gink-test-windows.zip", "manifest.sig", "manifest.txt"):
+                shutil.copyfile(os.path.join(out, name), os.path.join(args.to, name + ".part"))
+                os.replace(os.path.join(args.to, name + ".part"), os.path.join(args.to, name))
+    print(f"published build {build} to {args.to}")
+
+
+if __name__ == "__main__":
+    main()

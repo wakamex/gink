@@ -1,0 +1,19 @@
+#!/bin/sh
+# Starts a virtual display for trying the window by hand, and prints its name (":N"):
+#   DISPLAY=$(tools/test-display) || exit 1      then run the program on it; stop it with: tools/test-display stop
+# The number is the first from 200 that nothing holds, and the script fails when the display does
+# not start. A fixed number is not used: another program's display may hold it, and a window opened
+# there shows on that program's screen, which may be one that is recorded or streamed.
+set -eu
+unit=gsignal-test-display
+systemctl --user stop "$unit" 2>/dev/null || true
+systemctl --user reset-failed "$unit" 2>/dev/null || true
+[ "${1:-}" = stop ] && exit 0
+n=200
+while [ -e "/tmp/.X11-unix/X$n" ] || [ -e "/tmp/.X$n-lock" ]; do n=$((n + 1)); done
+systemd-run --user -q --unit="$unit" Xvfb ":$n" -screen 0 1280x1200x24 -nolisten tcp
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "/tmp/.X11-unix/X$n" ] && break; sleep 0.3; done
+# (the display must be this unit's own: a number taken in the meantime makes Xvfb exit)
+sleep 0.3
+systemctl --user is-active -q "$unit" && [ -e "/tmp/.X11-unix/X$n" ] || { echo "the virtual display did not start" >&2; exit 1; }
+echo ":$n"

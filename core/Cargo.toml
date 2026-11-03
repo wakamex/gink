@@ -1,0 +1,39 @@
+[package]
+name = "gsignal_core"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[workspace]
+members = ["signal-client", "signal-store"]
+
+[dependencies]
+signal-client = { path = "signal-client" }
+signal-store = { path = "signal-store" }
+futures = "0.3"
+getrandom = "0.3"
+hex = "0.4"
+qrcode = { version = "0.14", default-features = false }
+sqlx = { version = "0.9.0", features = ["sqlite", "runtime-tokio"] }
+tokio = { version = "1.48", features = ["rt", "sync", "time", "macros"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+ed25519-dalek = "3"
+sha2 = "0.11"
+reqwest = { version = "0.13", default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+[patch.crates-io]
+# SQLCipher with a cryptography provider written in Rust, and without its teardown at exit, which is
+# unsafe while other threads still hold connections.
+libsqlite3-sys = { version = "0.36.0", git = "https://github.com/boxdot/rusqlite", rev = "a2f393913d9994645c94810498bef07b2183b3dc" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"

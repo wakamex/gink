@@ -1,0 +1,66 @@
+#!/bin/sh
+# Runs a Windows build on the desktop of a Windows machine reached over SSH, and reports the result:
+#   tools/test-windows [SSH_HOST] [BIN_DIR]     (defaults: windows, zig-out/windows/bin)
+# The programs are started by a scheduled task marked interactive, which puts the window in the
+# signed-in user's session; a process started by SSH itself runs in a session with no desktop.
+# On a fresh profile, gink-core adds an account and waits for it to be linked; gink then opens
+# on the same profile, draws on the real display, and writes that frame to shot.png, which is copied
+# back into BIN_DIR as windows-shot.png. Exits 0 when the screenshot was written.
+#
+# By itself the shot is of the linking code. With GINK_LIVE=1, and the two signal-cli daemons
+# that tests/test_signal_live.py describes, the test account's primary device accepts the code, the
+# peer sends messages in several scripts, the shot is of the conversation showing them, and the device is
+# unlinked again afterwards.
+set -eu
+host=${1:-windows} bin=${2:-zig-out/windows/bin}
+live=${GINK_LIVE:-0}
+if [ "$live" = 1 ]; then core_s=35 after=10; else core_s=5 after=6; fi
+py() { python3 -c "import sys; from tests.test_signal_live import *
+account, account_socket = daemon(ACCOUNT_UNIT); peer, peer_socket = daemon(PEER_UNIT)
+$1" "${2:-}"; }
+
+ssh -o BatchMode=yes "$host" 'schtasks /End /TN gink-test 2>$null | Out-Null; Stop-Process -Name gink, gink-core -Force -ErrorAction SilentlyContinue; Start-Sleep 2; New-Item -ItemType Directory -Force "$env:USERPROFILE\gink-test" | Out-Null; Remove-Item "$env:USERPROFILE\gink-test\*" -Recurse -Force -ErrorAction SilentlyContinue'
+scp -q "$bin/gink.exe" "$bin/gink-core.exe" "$bin/ClankerTwemoji.ttf" "$bin/ClankerMono-Regular.ttf" "$bin/Inter-Regular.ttf" "$host:gink-test/"
+[ "$live" = 1 ] && before=$(py 'print(" ".join(str(d["id"]) for d in rpc(account_socket, "listDevices", {})))')
+ssh -o BatchMode=yes "$host" "powershell -NoProfile -ExecutionPolicy Bypass -Command -" <<PS
+\$d = "\$env:USERPROFILE\gink-test"
+Set-Content "\$d\run.cmd" "@echo off\`r\`ncd /d \`"\$d\`"\`r\`ngink-core.exe --data \`"\$d\data\`" --seconds $core_s > \`"\$d\out.txt\`" 2>&1\`r\`ngink.exe --data \`"\$d\data\`" --shot \`"\$d\shot.png\`" --after $after >> \`"\$d\out.txt\`" 2>&1\`r\`necho %ERRORLEVEL% > \`"\$d\exit.txt\`"\`r\`n"
+schtasks /Create /TN gink-test /TR "\`"\$d\run.cmd\`"" /SC ONCE /ST 00:00 /IT /RU \$env:USERNAME /F 2>\$null | Out-Null
+schtasks /Run /TN gink-test | Out-Null
+PS
+if [ "$live" = 1 ]; then
+    trap 'py "
+for d in rpc(account_socket, \"listDevices\", {}):
+    if str(d[\"id\"]) not in sys.argv[1].split(): rpc(account_socket, \"removeDevice\", {\"deviceId\": d[\"id\"]})
+# (the peer forgets the removed device on its next send; left until a new device has taken the same
+# number, signal-cli 0.14.9 fails every send to the account instead)
+rpc(peer_socket, \"send\", {\"recipient\": [account], \"message\": \"gink test: a device was removed\"})" "$before"' EXIT
+    code=
+    for _ in $(seq 20); do
+        code=$(ssh -o BatchMode=yes "$host" 'Get-Content "$env:USERPROFILE\gink-test\out.txt" -ErrorAction SilentlyContinue' | tr -d '\r' | sed -n 's/^sign-in-code //p' | head -1)
+        [ -n "$code" ] && break
+        sleep 1
+    done
+    [ -n "$code" ] || { echo "no code to link with was offered" >&2; exit 1; }
+    py 'rpc(account_socket, "addDevice", {"uri": sys.argv[1]})' "$code"
+    sleep 12
+    py 'for text in [
+    "A long one, to be wrapped: " + "the quick brown fox jumps over the lazy dog, " * 5 + "and stops.",
+    "Three lines:\nthe second,\nand the third.",
+    "Latin: naïve café, Ærøskøbing.",
+    "Arabic: مرحبا بالعالم، هذه رسالة اختبار طويلة قليلا للتأكد من أن النص يلتف بشكل صحيح من اليمين إلى اليسار عندما يتجاوز عرض النافذة.",
+    "Devanagari: नमस्ते दुनिया, यह एक परीक्षण संदेश है। क्षत्रिय ज्ञान श्री।",
+    "Emoji: 😀 👍🏽 👨‍👩‍👧 🇨🇦 ❤️ 1️⃣ 👩‍🚀 🏴‍☠️ and text after",
+    "CJK: 你好，世界。こんにちは世界。안녕하세요.",
+]:
+    rpc(peer_socket, "send", {"recipient": [account], "message": text})'
+fi
+ssh -o BatchMode=yes "$host" 'powershell -NoProfile -ExecutionPolicy Bypass -Command -' <<'PS' | tr -d '\r'
+$d = "$env:USERPROFILE\gink-test"
+for ($i = 0; $i -lt 180 -and -not (Test-Path "$d\exit.txt"); $i++) { Start-Sleep -Milliseconds 500 }
+schtasks /Delete /TN gink-test /F | Out-Null
+Get-Content "$d\out.txt" -ErrorAction SilentlyContinue | ForEach-Object { if ($_ -match '^sign-in-code ') { 'sign-in-code (not shown)' } else { $_ } }
+"exit: " + (Get-Content "$d\exit.txt" -ErrorAction SilentlyContinue)
+PS
+scp -q "$host:gink-test/shot.png" "$bin/windows-shot.png"
+ssh -o BatchMode=yes "$host" 'if ((Get-Content "$env:USERPROFILE\gink-test\exit.txt").Trim() -ne "0") { exit 1 }'

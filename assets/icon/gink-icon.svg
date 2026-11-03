@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="gink app icon">
+  <!-- carrier: gink's dark window background, as a rounded square -->
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="#1b1d1f"/>
+  <!-- a conversation as three messages, on alternating sides as a chat lays them out:
+       the other person's in the accent with its tail at the lower left -->
+  <path d="M60 36 h112 a22 22 0 0 1 22 22 v8 a22 22 0 0 1 -22 22 h-112 l-22 12 v-42 a22 22 0 0 1 22 -22 z" fill="#2ec4a6"/>
+  <!-- the reply, in cream, from the right, with its tail at the lower right -->
+  <path d="M196 102 h-112 a22 22 0 0 0 -22 22 v8 a22 22 0 0 0 22 22 h112 l22 12 v-42 a22 22 0 0 0 -22 -22 z" fill="#eee8de"/>
+  <!-- the other person again, shorter -->
+  <path d="M60 168 h64 a22 22 0 0 1 22 22 v8 a22 22 0 0 1 -22 22 h-64 l-22 12 v-42 a22 22 0 0 1 22 -22 z" fill="#2ec4a6"/>
+</svg>

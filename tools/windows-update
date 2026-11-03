@@ -1,0 +1,12 @@
+#!/bin/sh
+# Replaces the gink that runs on a Windows machine with the one just built, and starts it again:
+#   tools/windows-update [SSH_HOST] [BIN_DIR] [FOLDER]   (defaults: windows, zig-out/windows/bin, gink in the user's folder)
+# The program keeps its data, which lives elsewhere. tools/windows_update.py does the exchange there,
+# run by deskrun in the signed-in user's session, which is where the program must be
+# started to have a window; that window comes forward when it starts.
+set -eu
+host=${1:-windows} bin=${2:-zig-out/windows/bin} folder=${3:-gink}
+here=$(dirname "$0")
+ssh -o BatchMode=yes "$host" "mkdir $folder/new" > /dev/null 2>&1 || true
+scp -q "$bin/gink.exe" "$bin/ClankerTwemoji.ttf" "$bin/ClankerMono-Regular.ttf" "$bin/Inter-Regular.ttf" "$host:$folder/new/"
+deskrun run --host "$host" --space gink --timeout 60 --put "$here/windows_update.py" -- python windows_update.py "$folder"

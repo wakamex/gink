@@ -1,0 +1,14 @@
+# Third-party licences of gink's core
+
+The Rust crates built into gink's core, with the licence each is used under and that licence's text.
+
+{{#each licenses}}
+## {{name}}
+
+Used by: {{#each used_by}}{{crate.name}} {{crate.version}}{{#unless @last}}, {{/unless}}{{/each}}
+
+```
+{{text}}
+```
+
+{{/each}}

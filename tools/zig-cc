@@ -1,0 +1,11 @@
+#!/bin/sh
+# The C compiler Cargo's build scripts use for the core's dependencies: `zig cc` for the app's
+# target, so their objects match what `zig build` links. Set by build.zig through CC_<target>.
+# Build scripts add a `--target=` in Rust's spelling, which zig does not accept; it is dropped.
+for arg; do
+    shift
+    case "$arg" in --target=*) ;; *) set -- "$@" "$arg" ;; esac
+done
+# Unoptimized builds get no undefined-behaviour checks: zig adds them by default, and the objects are
+# also linked by Cargo into its own build-time programs, which have no runtime for the checks.
+exec "$GINK_ZIG" cc -target "$GINK_ZIG_TARGET" -fno-sanitize=undefined "$@"

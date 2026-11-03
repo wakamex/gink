@@ -1,0 +1,10 @@
+#!/bin/sh
+# Saves a picture of the gink window on a Windows machine reached over SSH:
+#   tools/windows-grab [OUT.png] [SSH_HOST] [WINDOW_TITLE]     (defaults: windows-grab.png, windows, gink)
+# deskrun takes it in the signed-in user's session, so nothing comes forward or takes
+# the keyboard. The gink window may be behind others, but not minimized or hidden to the tray. The
+# picture shows whatever conversations are on screen: keep it out of the repository.
+set -eu
+out=${1:-windows-grab.png} host=${2:-windows} title=${3:-gink}
+deskrun run --host "$host" --space gink --timeout 30 --get "frame.png:$out" -- helper window-grab --title "$title"
+echo "$out"

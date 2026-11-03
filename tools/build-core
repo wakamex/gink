@@ -1,0 +1,29 @@
+#!/bin/sh
+# Builds the core's static library with Cargo for one target. Run by build.zig:
+#   tools/build-core RUST_TARGET ZIG_TARGET debug|release
+# with GINK_ZIG set to the zig executable. The C in the core's dependencies (SQLCipher, ring) is
+# compiled by `zig cc` for the app's own target, through tools/zig-cc, so that its objects match what
+# `zig build` links. On macOS the system's compiler does it, as it knows where the SDK is.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+rust_target=$1 zig_target=$2 profile=$3
+case "$rust_target" in
+*-apple-darwin) ;;
+*)
+    env_target=$(printf %s "$rust_target" | tr - _)
+    export GINK_ZIG_TARGET="$zig_target"
+    export "CC_$env_target=$root/tools/zig-cc" "AR_$env_target=$root/tools/zig-ar"
+    ;;
+esac
+# (the commit the build was made from, with a + when files differed from it, for the log's first line)
+# (one given from outside, by a test of updating, is kept)
+if [ -z "${GINK_BUILD:-}" ]; then
+    GINK_BUILD=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
+    git -C "$root" diff --quiet 2>/dev/null || GINK_BUILD="$GINK_BUILD+"
+fi
+export GINK_BUILD
+[ "$profile" = release ] && set -- --release || set --
+# (a target directory per zig target: Cargo does not know that the same Rust target with another
+# glibc version needs its C compiled again)
+exec cargo build --locked --manifest-path "$root/core/Cargo.toml" --target "$rust_target" \
+    --target-dir "$root/core/target/$zig_target" "$@"
