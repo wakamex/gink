@@ -193,6 +193,7 @@ typedef struct {
     // The code to show while an account waits to be linked.
     int64_t code_account;
     char code_link[512];
+    Uint64 code_since;      // when the code came, while one is shown (Signal takes a code for about 90 seconds)
     uint8_t code[177 * 177];  // (the largest QR code is 177 modules a side)
     int code_size;
     char draft[64 * 1024];  // what is being written: as long as Signal Desktop takes, beyond 2,000 bytes sent as a text attachment
@@ -415,6 +416,7 @@ static void drain_events(app *a) {
             a->code_account = e.account, a->code_size = e.code_size;
             memcpy(a->code, e.code, (size_t)e.code_size * e.code_size);
             snprintf(a->code_link, sizeof a->code_link, "%s", e.text);
+            a->code_since = SDL_GetTicks();
         }
     }
     if (accounts) a->naccounts = SDL_min(gsc_accounts(a->core, a->accounts, MAX_ACCOUNTS), MAX_ACCOUNTS);
@@ -591,6 +593,7 @@ static void health(app *a, gs_ui *ui, gs_rect *r) {
     }
 }
 
+#define CODE_LIFE_S 90
 // The code a waiting account wants scanned by its primary device, as dark squares on white with the
 // clear margin a scanner needs, and the same link as text below it.
 static void sign_in(app *a, gs_ui *ui, gs_rect r) {
@@ -605,6 +608,13 @@ static void sign_in(app *a, gs_ui *ui, gs_rect r) {
     gs_ui_text(ui, caption, "Scan with Signal on your phone: Settings, Linked devices, Link new device", s->text_px, s->text, 0);
 #endif
     gs_ui_text(ui, gs_inset(link, 8), a->code_link, s->small_px, s->muted, 0);
+    // How long the code is good for: Signal's server lets the link wait about 90 seconds, then gink is
+    // given a new code. A scan after that reaches nothing.
+    int left = CODE_LIFE_S - (int)((SDL_GetTicks() - a->code_since) / 1000);
+    char fresh[80];
+    if (left > 0) snprintf(fresh, sizeof fresh, "This code is good for about %d more seconds", left);
+    else snprintf(fresh, sizeof fresh, "This code has run out; a new one is coming");
+    gs_ui_text(ui, gs_cut_bottom(&r, s->row * 1.5f), fresh, s->text_px, left > 15 ? s->text : s->warning, 0);
     int n = a->code_size + 8;
     float side = SDL_floorf(SDL_min(r.w, r.h) / n) * n, m = side / n;
     gs_rect box = { r.x + (r.w - side) / 2, r.y + (r.h - side) / 2, side, side };
@@ -2447,6 +2457,7 @@ static void frame(app *a, gs_ui *ui) {
     const gsc_account *waiting = NULL;
     for (int i = 0; i < a->naccounts; i++)
         if (a->accounts[i].state == GSC_ACCOUNT_SIGNING_IN && a->accounts[i].id == a->code_account) waiting = &a->accounts[i];
+    if (!waiting) a->code_since = 0;  // (and with no code shown, nothing counts down)
     if (!a->naccounts) {
         gs_rect button = { r.x + (r.w - 220) / 2, r.y + (r.h - s->row) / 2, 220, s->row };
         if (gs_ui_button(ui, button, "Link a Signal account")) gsc_account_add(a->core, "signal", "gink");
@@ -2920,6 +2931,7 @@ int main(int argc, char **argv) {
         if (a.draft_changed && SDL_GetTicks() - a.draft_changed >= 700) save_draft(&a), a.draft_changed = 0;
         if (a.draft_changed) wait = wait < 0 || wait > 700 ? 700 : wait;
         if (a.updated) wait = wait < 0 || wait > 10000 ? 10000 : wait;  // (to see whether the user has left it be)
+        if (a.code_since) wait = wait < 0 || wait > 1000 ? 1000 : wait;  // (the code's time left counts down)
         if (shot) {  // (a shot wakes on its own when its time comes)
             int left = (int)SDL_max(0, (Sint64)(after * 1000) - (Sint64)(now - started));
             wait = wait < 0 || left < wait ? left : wait;

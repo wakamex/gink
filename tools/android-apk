@@ -2,7 +2,7 @@
 # Builds gink for Android and packs it into an APK, with the Android SDK's command-line tools and no Gradle:
 #   tools/android-apk [ABI...]        (default: arm64-v8a x86_64) -> zig-out/android/gink.apk
 # ANDROID_HOME names the SDK (default ~/Android/Sdk), with build-tools, a platform and the NDK in it.
-# The APK is signed with the SDK's debug key (~/.android/debug.keystore, made if missing): a build to
+# The APK is debuggable and signed with the SDK's debug key (~/.android/debug.keystore, made if missing): a build to
 # try on a phone or the emulator, `adb install -r zig-out/android/gink.apk`.
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -40,7 +40,7 @@ magick -background none -density 384 "$root/assets/icon/gink-icon.svg" -resize 1
 "$tools/aapt2" compile --dir "$work/res" -o "$work/res.zip"
 mkdir -p "$work/assets"
 cp "$root"/assets/*.ttf "$root/LICENSE" "$root/assets/NOTICE.md" "$root"/assets/*-LICENSE.txt "$work/assets/"
-"$tools/aapt2" link -I "$platform" --manifest "$root/android/AndroidManifest.xml" -A "$work/assets" \
+"$tools/aapt2" link --debug-mode -I "$platform" --manifest "$root/android/AndroidManifest.xml" -A "$work/assets" \
     -o "$work/unsigned.apk" "$work/res.zip"
 (cd "$work/apk" && zip -q -r "$work/unsigned.apk" classes.dex lib)
 
