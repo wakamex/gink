@@ -418,7 +418,11 @@ static void drain_events(app *a) {
             a->code_account = e.account, a->code_size = e.code_size;
             memcpy(a->code, e.code, (size_t)e.code_size * e.code_size);
             snprintf(a->code_link, sizeof a->code_link, "%s", e.text);
-            a->code_since = SDL_GetTicks();
+            // (counted from when the core made it: on a phone the app may read it later, when it comes back in front)
+            SDL_Time now = 0;
+            SDL_GetCurrentTime(&now);
+            Sint64 age = SDL_clamp(now / 1000000 - e.made_ms, 0, (Sint64)SDL_GetTicks() - 1);
+            a->code_since = SDL_GetTicks() - (Uint64)age;
             gsc_log("new linking code");  // (to match a scan to the code it read)
         }
     }

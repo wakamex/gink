@@ -337,6 +337,7 @@ typedef struct {
     const uint8_t *code;  // code_size * code_size modules, row by row, 1 for dark
     int code_size;
     bool typing;  // take it as false again 15 seconds after the last such event from the same person
+    int64_t made_ms;  // when a sign-in code was made, in ms since 1970: it can wait unread while the app is paused
 } gsc_event;
 
 // Takes the oldest event. Returns false when there is none.

@@ -150,6 +150,7 @@ pub struct GscEvent {
     code: *const u8,
     code_size: c_int,
     typing: bool,
+    made_ms: i64,
 }
 
 fn c_string(s: &str) -> CString {
@@ -843,13 +844,13 @@ pub unsafe extern "C" fn gsc_reset_session(core: *mut Core, conversation: i64) {
 pub unsafe extern "C" fn gsc_event_next(core: *mut Core, out: *mut GscEvent) -> bool {
     let core = unsafe { &mut *core };
     let Some(event) = core.shared.events.lock().unwrap().pop_front() else { return false };
-    let mut e = GscEvent { kind: 0, account: 0, conversation: 0, message: 0, text: c"".as_ptr(), code: ptr::null(), code_size: 0, typing: false };
+    let mut e = GscEvent { kind: 0, account: 0, conversation: 0, message: 0, text: c"".as_ptr(), code: ptr::null(), code_size: 0, typing: false, made_ms: 0 };
     match event {
         Event::Account(account) => (e.kind, e.account) = (0, account),
-        Event::SignInCode { account, link, modules, size } => {
+        Event::SignInCode { account, link, modules, size, made_ms } => {
             core.event_text = c_string(&link);
             core.event_code = modules;
-            (e.kind, e.account, e.text, e.code, e.code_size) = (1, account, core.event_text.as_ptr(), core.event_code.as_ptr(), size);
+            (e.kind, e.account, e.text, e.code, e.code_size, e.made_ms) = (1, account, core.event_text.as_ptr(), core.event_code.as_ptr(), size, made_ms);
         }
         Event::Conversations => e.kind = 2,
         Event::Message { account, conversation, message } => (e.kind, e.account, e.conversation, e.message) = (3, account, conversation, message),

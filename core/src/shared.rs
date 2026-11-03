@@ -10,7 +10,8 @@ use crate::db::Db;
 
 pub enum Event {
     Account(i64),
-    SignInCode { account: i64, link: String, modules: Vec<u8>, size: i32 },
+    /// The code to show while an account waits to be linked, with when it was made (ms since 1970).
+    SignInCode { account: i64, link: String, modules: Vec<u8>, size: i32, made_ms: i64 },
     Conversations,
     Message { account: i64, conversation: i64, message: i64 },
     /// Many of a conversation's messages changed or went (some expired, a group change was noted): read them again.
@@ -93,6 +94,10 @@ impl Shared {
     pub fn push(&self, event: Event) {
         let was_empty = {
             let mut events = self.events.lock().unwrap();
+            // (a newer code replaces one still waiting: only the newest can be scanned)
+            if let Event::SignInCode { account, .. } = &event {
+                events.retain(|e| !matches!(e, Event::SignInCode { account: a, .. } if a == account));
+            }
             events.push_back(event);
             events.len() == 1
         };

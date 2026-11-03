@@ -332,7 +332,7 @@ async fn link(shared: &Arc<Shared>, account: i64, device_name: &str, store: Sqli
             let link = url.to_string();
             if let Ok(code) = qrcode::QrCode::new(link.as_bytes()) {
                 let modules = code.to_colors().iter().map(|c| (*c == qrcode::Color::Dark) as u8).collect();
-                shared.push(Event::SignInCode { account, link, modules, size: code.width() as i32 });
+                shared.push(Event::SignInCode { account, link, modules, size: code.width() as i32, made_ms: crate::shared::now_ms() });
             }
         }
     })
