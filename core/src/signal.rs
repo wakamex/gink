@@ -103,7 +103,13 @@ async fn session(shared: &Arc<Shared>, account: i64, device_name: &str, commands
     let path = shared.dir.join(format!("account-{account}.db"));
     let store = SqliteStore::open_with_key(&path, &shared.key, OnNewIdentity::AskToSend).await.map_err(text)?;
     let mut client = if store.is_registered().await {
-        Manager::load_registered(store).await.map_err(text)?
+        let mut client = Manager::load_registered(store).await.map_err(text)?;
+        // (a contacts sync that never arrived, or could not be read, is asked for again)
+        let known = client.store().contacts().await.map(|contacts| contacts.count()).unwrap_or(0);
+        if known == 0 {
+            client.request_contacts().await.map_err(text)?;
+        }
+        client
     } else {
         Box::pin(link(shared, account, device_name, store)).await?
     };

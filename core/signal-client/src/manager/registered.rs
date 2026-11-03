@@ -31,7 +31,6 @@ use libsignal_service::{
     },
     provisioning::ProvisioningError,
     push_service::{PushService, ServiceIds, DEFAULT_DEVICE_ID},
-    receiver::MessageReceiver,
     sender::{AttachmentSpec, AttachmentUploadError},
     sticker_cipher::derive_key,
     unidentified_access::UnidentifiedAccess,
@@ -910,7 +909,7 @@ impl<S: Store> Manager<S, Registered> {
             identified_websocket: SignalWebSocket<websocket::Identified>,
             unidentified_websocket: SignalWebSocket<websocket::Unidentified>,
             encrypted_messages: Receiver,
-            message_receiver: MessageReceiver,
+            push_service: PushService,
             service_cipher_aci: ServiceCipher<AciStore>,
             service_cipher_pni: ServiceCipher<PniStore>,
             groups_manager: GroupsManager<InMemoryCredentialsCache>,
@@ -962,7 +961,7 @@ impl<S: Store> Manager<S, Registered> {
             identified_websocket,
             unidentified_websocket: self.unidentified_websocket().await?,
             encrypted_messages: Box::pin(encrypted_messages.stream()),
-            message_receiver: MessageReceiver::new(identified_push_service),
+            push_service: identified_push_service,
             service_cipher_aci: self.new_service_cipher_aci(),
             service_cipher_pni: self.new_service_cipher_pni(),
             groups_manager: Box::pin(self.groups_manager()).await?,
@@ -1165,14 +1164,10 @@ impl<S: Store> Manager<S, Registered> {
                                         ..
                                     }) = &content.body
                                     {
-                                        match state
-                                            .message_receiver
-                                            .retrieve_contacts(contacts)
-                                            .await
-                                        {
+                                        match retrieve_contacts(&mut state.push_service, contacts).await {
                                             Ok(contacts) => {
                                                 info!("saving contacts");
-                                                for contact in contacts.filter_map(Result::ok) {
+                                                for contact in contacts {
                                                     if let Err(error) = state
                                                         .store
                                                         .save_contact(&contact.into())
@@ -2491,4 +2486,101 @@ async fn register_pre_keys<S: Store>(
 
     trace!("registered pre keys");
     Ok(())
+}
+
+/// Downloads and reads the contacts the primary device sent: records of ContactDetails, each
+/// preceded by its length and followed by its picture when it has one. Unlike libsignal-service's
+/// own reader, which panics on it, a record or picture that runs past the end of the data ends the
+/// list, keeping what came before: a phone's sync has been seen claiming a picture of 4345 bytes
+/// with 3177 left.
+async fn retrieve_contacts(
+    service: &mut PushService,
+    contacts: &sync_message::Contacts,
+) -> Result<Vec<libsignal_service::models::Contact>, libsignal_service::push_service::ServiceError> {
+    use libsignal_service::push_service::ServiceError;
+
+    let Some(blob) = &contacts.blob else { return Ok(Vec::new()) };
+    let mut ciphertext = Vec::new();
+    service.get_attachment(blob).await?.stream.read_to_end(&mut ciphertext).await?;
+    let key: [u8; 64] = blob.key().try_into().map_err(|_| ServiceError::InvalidFrame { reason: "contacts key is not 64 bytes" })?;
+    decrypt_in_place(key, &mut ciphertext).map_err(|_| ServiceError::InvalidFrame { reason: "contacts did not decrypt" })?;
+    // (the attachment is padded past the size it gives)
+    if let Some(size) = blob.size.and_then(|size| usize::try_from(size).ok()) {
+        ciphertext.truncate(size);
+    }
+    Ok(read_contacts(ciphertext))
+}
+
+/// The contacts in a decrypted contacts attachment, as far as they read.
+fn read_contacts(plaintext: Vec<u8>) -> Vec<libsignal_service::models::Contact> {
+    use bytes::Buf;
+    use libsignal_service::proto::ContactDetails;
+
+    let total = plaintext.len();
+    let mut data = bytes::Bytes::from(plaintext);
+    let mut read = Vec::new();
+    while data.has_remaining() {
+        let details = match ContactDetails::decode_length_delimited(&mut data) {
+            Ok(details) => details,
+            Err(error) => {
+                warn!(%error, offset = total - data.remaining(), total, "contacts: a record does not read; the list ends there");
+                break;
+            },
+        };
+        let length = details.avatar.as_ref().and_then(|avatar| avatar.length).unwrap_or(0) as usize;
+        if length > data.remaining() {
+            warn!(length, left = data.remaining(), total, "contacts: a picture runs past the end; the list ends there");
+            if let Ok(contact) = libsignal_service::models::Contact::from_proto(details, None) {
+                read.push(contact);
+            }
+            break;
+        }
+        let picture = (length > 0).then(|| data.copy_to_bytes(length));
+        match libsignal_service::models::Contact::from_proto(details, picture) {
+            Ok(contact) => read.push(contact),
+            Err(error) => debug!(%error, "contacts: a record is skipped"),
+        }
+    }
+    read
+}
+
+#[cfg(test)]
+mod contacts_tests {
+    use libsignal_service::prelude::ProtobufMessage;
+    use libsignal_service::proto::{contact_details::Avatar, ContactDetails};
+
+    fn record(aci: &str, name: &str, picture: Option<(u32, &[u8])>) -> Vec<u8> {
+        let details = ContactDetails {
+            aci: Some(aci.into()),
+            name: Some(name.into()),
+            avatar: picture.map(|(length, _)| Avatar { content_type: Some("image/jpeg".into()), length: Some(length) }),
+            ..Default::default()
+        };
+        let mut out = details.encode_length_delimited_to_vec();
+        if let Some((_, bytes)) = picture {
+            out.extend_from_slice(bytes);
+        }
+        out
+    }
+
+    const A: &str = "11111111-1111-4111-8111-111111111111";
+    const B: &str = "22222222-2222-4222-8222-222222222222";
+
+    #[test]
+    fn reads_records_with_and_without_pictures() {
+        let mut data = record(A, "Ann", Some((3, b"abc")));
+        data.extend(record(B, "Bob", None));
+        let read = super::read_contacts(data);
+        assert_eq!(read.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Ann", "Bob"]);
+        assert!(read[0].avatar.is_some() && read[1].avatar.is_none());
+    }
+
+    #[test]
+    fn a_picture_past_the_end_keeps_what_came_before() {
+        let mut data = record(A, "Ann", None);
+        data.extend(record(B, "Bob", Some((4345, &[0u8; 3177]))));
+        let read = super::read_contacts(data);
+        assert_eq!(read.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Ann", "Bob"]);
+        assert!(read[1].avatar.is_none());
+    }
 }
