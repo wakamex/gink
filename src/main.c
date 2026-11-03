@@ -597,11 +597,10 @@ static void sign_in(app *a, gs_ui *ui, gs_rect r) {
     const gs_ui_style *s = gs_ui_style_of(ui);
     gs_rect caption = gs_cut_top(&r, s->row * 2), link = gs_cut_bottom(&r, s->row * 2);
 #ifdef __ANDROID__
-    // (a phone cannot scan its own screen: Signal on the same phone takes the link itself, and the code
-    // stays for scanning from another device)
-    float w = gs_ui_text_width(ui, "Link with Signal on this phone", s->text_px) + 32;
-    if (gs_ui_button(ui, (gs_rect){ caption.x + (caption.w - w) / 2, caption.y + s->row / 4, w, s->row * 1.5f }, "Link with Signal on this phone")) SDL_OpenURL(a->code_link);
-    gs_ui_text(ui, gs_cut_top(&r, s->row * 2), "Or scan this code from another device", s->text_px, s->text, 0);
+    // (a phone cannot scan its own screen, and Signal on the same phone takes a link only through its
+    // camera: given the link itself, it opens its scanner)
+    gs_ui_text(ui, gs_cut_top(&caption, caption.h / 2), "Scan with Signal on your main phone", s->text_px, s->text, 0);
+    gs_ui_text(ui, caption, "Same phone? Show the code on another screen", s->small_px, s->muted, 0);
 #else
     gs_ui_text(ui, caption, "Scan with Signal on your phone: Settings, Linked devices, Link new device", s->text_px, s->text, 0);
 #endif
