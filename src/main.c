@@ -15,6 +15,7 @@
 #include <shellapi.h>
 #endif
 
+#include "gs_background.h"
 #include "gs_desk.h"
 #include "gs_draw.h"
 #include "gs_gif.h"
@@ -193,6 +194,7 @@ typedef struct {
     // The code to show while an account waits to be linked.
     int64_t code_account;
     char code_link[512];
+    const char *kept;       // the text of the notice that keeps the app online in the background, NULL when not kept
     Uint64 code_since;      // when the code came, while one is shown (Signal takes a code for about 90 seconds)
     uint8_t code[177 * 177];  // (the largest QR code is 177 modules a side)
     int code_size;
@@ -2458,6 +2460,13 @@ static void frame(app *a, gs_ui *ui) {
     for (int i = 0; i < a->naccounts; i++)
         if (a->accounts[i].state == GSC_ACCOUNT_SIGNING_IN && a->accounts[i].id == a->code_account) waiting = &a->accounts[i];
     if (!waiting) a->code_since = 0;  // (and with no code shown, nothing counts down)
+    // While an account waits to be linked or receives messages, the app stays online behind other apps:
+    // on a phone the code is scanned with Signal in front. (asked while it is in front, as Android wants)
+    const char *keep = waiting ? "Waiting to be linked" : a->naccounts ? "Receiving messages" : NULL;
+    if (keep != a->kept) {
+        if (keep) a->kept = gs_background_keep("gink", keep) ? keep : NULL;
+        else gs_background_release(), a->kept = NULL;
+    }
     if (!a->naccounts) {
         gs_rect button = { r.x + (r.w - 220) / 2, r.y + (r.h - s->row) / 2, 220, s->row };
         if (gs_ui_button(ui, button, "Link a Signal account")) gsc_account_add(a->core, "signal", "gink");
