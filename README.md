@@ -50,7 +50,7 @@ Some limits belong to Signal's own programs and not to the protocol: another pro
 
 ## Build and run
 
-Building needs [Zig](https://ziglang.org/) 0.17, [Cargo](https://doc.rust-lang.org/cargo/) and the [Protocol Buffers](https://protobuf.dev/) compiler `protoc` on the path, or named by `PROTOC`.
+Building needs [Zig](https://ziglang.org/) 0.17, [Cargo](https://doc.rust-lang.org/cargo/) and the [Protocol Buffers](https://protobuf.dev/) compiler `protoc` on the path, or named by `PROTOC`. The Windows build also needs Rust's `x86_64-pc-windows-gnu` target (`rustup target add x86_64-pc-windows-gnu`) and `x86_64-w64-mingw32-dlltool` from [MinGW-w64](https://www.mingw-w64.org/)'s binutils, packaged as `binutils-mingw-w64-x86-64` on Debian and Ubuntu and `mingw64-binutils` on Fedora.
 
 ```sh
 zig build run                                                              # build and run
