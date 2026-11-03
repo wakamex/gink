@@ -188,6 +188,7 @@ typedef struct {
     bool oldest_held;       // the open conversation has no messages older than those held
     int selected;           // the row selected in the conversation list, a place in `listed`
     int64_t open;           // the conversation whose messages are shown, 0 for none
+    bool narrow;            // the window has room for the list or a conversation, not both (a phone held upright)
     bool focused;           // the window has the keyboard: only then is what it shows counted as read
     // The code to show while an account waits to be linked.
     int64_t code_account;
@@ -595,7 +596,16 @@ static void health(app *a, gs_ui *ui, gs_rect *r) {
 static void sign_in(app *a, gs_ui *ui, gs_rect r) {
     const gs_ui_style *s = gs_ui_style_of(ui);
     gs_rect caption = gs_cut_top(&r, s->row * 2), link = gs_cut_bottom(&r, s->row * 2);
+#ifdef __ANDROID__
+    // (a phone cannot scan its own screen: Signal on the same phone takes the link itself, and the code
+    // stays for scanning from another device)
+    gs_ui_text(ui, caption, "Link with Signal on this phone, or scan the code from another device", s->text_px, s->text, 0);
+    gs_rect here = gs_cut_top(&r, s->row * 2);
+    float w = gs_ui_text_width(ui, "Link with Signal on this phone", s->text_px) + 32;
+    if (gs_ui_button(ui, (gs_rect){ here.x + (here.w - w) / 2, here.y, w, s->row * 1.5f }, "Link with Signal on this phone")) SDL_OpenURL(a->code_link);
+#else
     gs_ui_text(ui, caption, "Scan with Signal on your phone: Settings, Linked devices, Link new device", s->text_px, s->text, 0);
+#endif
     gs_ui_text(ui, gs_inset(link, 8), a->code_link, s->small_px, s->muted, 0);
     int n = a->code_size + 8;
     float side = SDL_floorf(SDL_min(r.w, r.h) / n) * n, m = side / n;
@@ -959,6 +969,8 @@ static void hit_list(app *a, gs_ui *ui, gs_rect r) {
 #define LIST_ICONS 0
 #define LIST_MIN 95
 #define LIST_W 260
+// Narrower than this, the window shows the list or one conversation, filling it, with a way back.
+#define NARROW 560
 
 // The list drawn as pictures alone, each with its count of unread messages on its corner.
 static void conversation_icons(app *a, gs_ui *ui, gs_rect r) {
@@ -982,7 +994,7 @@ static void conversation_icons(app *a, gs_ui *ui, gs_rect r) {
     }
     gs_ui_clip(ui, NULL);
     gs_ui_list_end(ui);
-    if ((rows.activated || a->selected != before || !a->open) && a->selected >= 0 && a->selected < a->nlisted) open_conversation(a, a->listed[a->selected], MESSAGES_FIRST);
+    if ((rows.activated || a->selected != before || (!a->open && !a->narrow)) && a->selected >= 0 && a->selected < a->nlisted) open_conversation(a, a->listed[a->selected], MESSAGES_FIRST);
 }
 
 static void conversation_list(app *a, gs_ui *ui, gs_rect r) {
@@ -1030,7 +1042,7 @@ static void conversation_list(app *a, gs_ui *ui, gs_rect r) {
     }
     gs_ui_clip(ui, NULL);
     gs_ui_list_end(ui);
-    if ((rows.activated || a->selected != before || !a->open) && a->selected >= 0 && a->selected < a->nlisted) open_conversation(a, a->listed[a->selected], MESSAGES_FIRST);
+    if ((rows.activated || a->selected != before || (!a->open && !a->narrow)) && a->selected >= 0 && a->selected < a->nlisted) open_conversation(a, a->listed[a->selected], MESSAGES_FIRST);
 }
 
 // A message's row: a line saying who and when, the message it replies to if any, its text wrapped to
@@ -2072,7 +2084,7 @@ static void message_view(app *a, gs_ui *ui, gs_rect r) {
     // A picture that was clicked is shown whole, to zoom and move about, until it is closed.
     if (a->viewing) {
         gs_rect bar = gs_inset(gs_cut_top(&r, s->row + 16), 8);
-        bool close = gs_ui_button(ui, gs_cut_right(&bar, 72), "Close") || gs_ui_key(ui, SDLK_ESCAPE, 0);
+        bool close = gs_ui_button(ui, gs_cut_right(&bar, 72), "Close") || gs_ui_key(ui, SDLK_ESCAPE, 0) || gs_ui_key(ui, SDLK_AC_BACK, 0);
         gs_cut_right(&bar, 8);
         if (gs_ui_button(ui, gs_cut_right(&bar, 72), "Save")) SDL_ShowSaveFileDialog(chose_save, (void *)(intptr_t)a->viewing, a->window, NULL, 0, a->viewing_name[0] ? a->viewing_name : NULL);
         gs_cut_right(&bar, 8);
@@ -2123,6 +2135,9 @@ static void message_view(app *a, gs_ui *ui, gs_rect r) {
         gs_rect bar = gs_cut_top(&r, s->row + 16);
         gs_ui_fill(ui, bar, s->panel);
         bar = gs_inset(bar, 8);
+        // (alone in the window, it has a way back to the list)
+        if (a->narrow && gs_ui_button(ui, gs_cut_left(&bar, 40), "<")) stop_typing(a), a->open = 0;
+        if (a->narrow) gs_cut_left(&bar, 8);
         if (gs_ui_button(ui, gs_cut_right(&bar, 84), c->muted ? "Unmute" : "Mute")) gsc_mute(a->core, c->id, !c->muted);
         // The disappearing timer, for a conversation with one person: its button says what it is,
         // and opens the choices under it.
@@ -2439,6 +2454,14 @@ static void frame(app *a, gs_ui *ui) {
         if (gs_ui_button(ui, button, "Link a Signal account")) gsc_account_add(a->core, "signal", "gink");
     } else if (waiting) {
         sign_in(a, ui, r);
+    } else if ((a->narrow = r.w < NARROW)) {
+        // (the system's back gesture goes from a picture to its conversation, and from it to the list)
+        if (a->open && !a->viewing && gs_ui_key(ui, SDLK_AC_BACK, 0)) stop_typing(a), a->open = 0;
+#ifdef __ANDROID__
+        else if (!a->open && gs_ui_key(ui, SDLK_AC_BACK, 0)) SDL_SendAndroidBackButton();
+#endif
+        if (a->open) message_view(a, ui, r);
+        else conversation_list(a, ui, r);
     } else {
         // The edge between the list and the conversation is dragged to make the list wider or
         // narrower. Short of LIST_MIN it goes to its pictures alone, or stays at LIST_MIN,
@@ -2655,6 +2678,8 @@ int main(int argc, char **argv) {
     // The click that brings the window forward also does what it was aimed at; SDL would otherwise
     // drop it, and the message box would take a second click.
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+    // (Android's back gesture comes as a key, which the narrow layout answers; at the list it leaves as usual)
+    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
     if (!SDL_Init(SDL_INIT_VIDEO)) return SDL_Log("SDL_Init: %s", SDL_GetError()), 1;
 
     char dir[1024], *error = NULL;

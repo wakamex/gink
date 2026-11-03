@@ -15,6 +15,7 @@
         android:extractNativeLibs="true">
         <activity
             android:name=".GinkActivity"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
             android:exported="true"
             android:launchMode="singleInstance"
             android:windowSoftInputMode="adjustResize"
