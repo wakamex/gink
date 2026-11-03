@@ -419,6 +419,7 @@ static void drain_events(app *a) {
             memcpy(a->code, e.code, (size_t)e.code_size * e.code_size);
             snprintf(a->code_link, sizeof a->code_link, "%s", e.text);
             a->code_since = SDL_GetTicks();
+            gsc_log("new linking code");  // (to match a scan to the code it read)
         }
     }
     if (accounts) a->naccounts = SDL_min(gsc_accounts(a->core, a->accounts, MAX_ACCOUNTS), MAX_ACCOUNTS);

@@ -11,6 +11,7 @@
     <!-- gesso's foreground service, which keeps gink online behind other apps -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <application
         android:label="gink"
         android:icon="@mipmap/ic_launcher"
