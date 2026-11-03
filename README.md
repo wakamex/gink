@@ -59,6 +59,8 @@ zig build -Doptimize=ReleaseSmall -Dtarget=x86_64-windows-gnu -p zig-out/windows
 zig build -Doptimize=ReleaseSmall -Dstrip=false -p zig-out/release-symbols # with symbols, for reading a crash
 ```
 
+An Android build is at an early stage: `tools/android-apk` builds it for phones (arm64-v8a) and the emulator (x86_64) and packs `zig-out/android/gink.apk`, signed with the [Android SDK](https://developer.android.com/studio)'s debug key. It needs the SDK, with its build tools, a platform and the Native Development Kit (NDK), named by `ANDROID_HOME`, and Rust's `aarch64-linux-android` and `x86_64-linux-android` targets.
+
 The first run shows a code to scan with the phone, under Signal's settings for linked devices. The program keeps its data, encrypted, in the user's application data folder; `--data DIR` names another.
 
 ## Tests

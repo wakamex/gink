@@ -1,0 +1,53 @@
+#!/bin/sh
+# Builds gink for Android and packs it into an APK, with the Android SDK's command-line tools and no Gradle:
+#   tools/android-apk [ABI...]        (default: arm64-v8a x86_64) -> zig-out/android/gink.apk
+# ANDROID_HOME names the SDK (default ~/Android/Sdk), with build-tools, a platform and the NDK in it.
+# The APK is signed with the SDK's debug key (~/.android/debug.keystore, made if missing): a build to
+# try on a phone or the emulator, `adb install -r zig-out/android/gink.apk`.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+sdk=${ANDROID_HOME:-$HOME/Android/Sdk}
+latest() { ls "$1" | sort -V | tail -1; }
+ndk="$sdk/ndk/$(latest "$sdk/ndk")"
+tools="$sdk/build-tools/$(latest "$sdk/build-tools")"
+platform="$sdk/platforms/$(latest "$sdk/platforms")/android.jar"
+api=26  # the manifest's minSdkVersion
+[ $# -gt 0 ] || set -- arm64-v8a x86_64
+out="$root/zig-out/android"
+work="$out/work"
+rm -rf "$work" && mkdir -p "$work/apk/lib" "$work/classes" "$work/res"
+
+# The native library, once per ABI.
+for abi; do
+    case "$abi" in
+    arm64-v8a) target=aarch64-linux-android ;;
+    x86_64) target=x86_64-linux-android ;;
+    *) echo "error: unknown ABI $abi (arm64-v8a or x86_64)" >&2; exit 1 ;;
+    esac
+    (cd "$root" && zig build -Doptimize=ReleaseSmall "-Dtarget=$target.$api" "-Dandroid_ndk=$ndk" -p "$work/zig-$abi")
+    mkdir -p "$work/apk/lib/$abi"
+    cp "$work/zig-$abi/lib/libmain.so" "$work/apk/lib/$abi/"
+done
+
+# The Java: SDL's activity and gesso's classes, from the build, and gink's own.
+javac -nowarn -Xlint:none --release 8 -classpath "$platform" -d "$work/classes" \
+    $(find "$work/zig-$1/java" "$root/android/java" -name '*.java')
+"$tools/d8" --min-api "$api" --lib "$platform" --output "$work/apk" $(find "$work/classes" -name '*.class')
+
+# The icon, the manifest and the fonts, linked by aapt2.
+mkdir -p "$work/res/mipmap-xxxhdpi"
+magick -background none -density 384 "$root/assets/icon/gink-icon.svg" -resize 192x192 "$work/res/mipmap-xxxhdpi/ic_launcher.png"
+"$tools/aapt2" compile --dir "$work/res" -o "$work/res.zip"
+mkdir -p "$work/assets"
+cp "$root"/assets/*.ttf "$root/LICENSE" "$root/assets/NOTICE.md" "$root"/assets/*-LICENSE.txt "$work/assets/"
+"$tools/aapt2" link -I "$platform" --manifest "$root/android/AndroidManifest.xml" -A "$work/assets" \
+    -o "$work/unsigned.apk" "$work/res.zip"
+(cd "$work/apk" && zip -q -r "$work/unsigned.apk" classes.dex lib)
+
+# Aligned and signed.
+key="$HOME/.android/debug.keystore"
+[ -f "$key" ] || keytool -genkeypair -keystore "$key" -storepass android -alias androiddebugkey -keypass android \
+    -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" >/dev/null
+"$tools/zipalign" -f -p 4 "$work/unsigned.apk" "$work/aligned.apk"
+"$tools/apksigner" sign --ks "$key" --ks-pass pass:android --out "$out/gink.apk" "$work/aligned.apk"
+echo "$out/gink.apk"

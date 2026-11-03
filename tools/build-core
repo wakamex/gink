@@ -9,6 +9,12 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 rust_target=$1 zig_target=$2 profile=$3
 case "$rust_target" in
 *-apple-darwin) ;;
+*-linux-android)
+    # (Android's C library and headers are the NDK's, so its own compiler builds the C)
+    env_target=$(printf %s "$rust_target" | tr - _)
+    bin="$GINK_ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+    export "CC_$env_target=$bin/$rust_target$GINK_ANDROID_API-clang" "AR_$env_target=$bin/llvm-ar"
+    ;;
 *)
     env_target=$(printf %s "$rust_target" | tr - _)
     export GINK_ZIG_TARGET="$zig_target"
