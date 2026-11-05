@@ -55,6 +55,8 @@ pub struct Address {
 }
 
 pub fn parse_address(address: &str) -> Result<Address, String> {
+    // (an address pasted from a file may bring its line ending, or spaces, with it)
+    let address = address.trim();
     let (tls, rest) = if let Some(rest) = address.strip_prefix("ircs://") {
         (true, rest)
     } else if let Some(rest) = address.strip_prefix("irc://") {
@@ -693,6 +695,7 @@ mod tests {
         assert_eq!(a.pin.unwrap()[1], 0x11);
         assert_eq!(parse_address("irc://u:p@localhost").unwrap().port, 6667);
         assert!(parse_address("ircs://u:p@host").is_err());
+        assert_eq!(parse_address(" irc://u:p@localhost:1\r\n").unwrap().port, 1);
     }
 
     #[test]

@@ -619,7 +619,11 @@ static void health(app *a, gs_ui *ui, gs_rect *r) {
         gs_cut_right(&row, 8);
         gs_ui_input(ui, row, "irc-address", a->irc_address, sizeof a->irc_address, "ircs://USER:PASSWORD@HOST:PORT?sha256=FINGERPRINT", GS_UI_MASKED | GS_UI_REVEAL);
         if ((gs_ui_button(ui, add, "Add") || gs_ui_key(ui, SDLK_RETURN, 0)) && a->irc_address[0]) {
-            gsc_account_add(a->core, "irc", a->irc_address);
+            // (without the spaces or line ending a paste from a file may bring)
+            char *address = a->irc_address;
+            while (SDL_isspace((unsigned char)*address)) address++;
+            for (size_t n = strlen(address); n && SDL_isspace((unsigned char)address[n - 1]); n--) address[n - 1] = 0;
+            gsc_account_add(a->core, "irc", address);
             SDL_memset(a->irc_address, 0, sizeof a->irc_address), a->adding_irc = false;
         }
         if (gs_ui_key(ui, SDLK_ESCAPE, 0) && !a->irc_address[0]) a->adding_irc = false;
