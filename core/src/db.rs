@@ -1202,6 +1202,15 @@ impl Db {
         Ok(done.rows_affected() > 0)
     }
 
+    /// Gives an account's messages their sender's key in lowercase, as IRC nicks are keyed.
+    pub async fn lowercase_senders(&self, account: i64) -> sqlx::Result<()> {
+        sqlx::query("UPDATE OR IGNORE messages SET sender = lower(sender) WHERE sender != lower(sender) AND conversation_id IN (SELECT id FROM conversations WHERE account_id = ?)")
+            .bind(account)
+            .execute(&self.0)
+            .await
+            .map(|_| ())
+    }
+
     /// An account's messages whose text holds IRC formatting codes.
     pub async fn coded_texts(&self, account: i64) -> sqlx::Result<Vec<(i64, String)>> {
         let rows = sqlx::query(

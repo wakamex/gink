@@ -455,6 +455,8 @@ enum Happened {
 async fn session(shared: &Arc<Shared>, account: i64, address: &str, commands: &mut mpsc::UnboundedReceiver<Command>) -> Result<(), String> {
     let address = parse_address(address)?;
     shared.update(account, |s| (s.state, s.error) = (State::Connecting, String::new()));
+    // (messages an earlier build kept under a nick as written, not its lowercase key, are named again)
+    shared.db.lowercase_senders(account).await.map_err(|e| e.to_string())?;
     // (messages kept with IRC's formatting codes still in them, by an earlier build, are read again)
     for (message, text) in shared.db.coded_texts(account).await.map_err(|e| e.to_string())? {
         let (plain, styles) = formatted(&text);
@@ -626,7 +628,9 @@ async fn heard(shared: &Arc<Shared>, account: i64, network: &mut Network, line: 
             if !outgoing {
                 let _ = shared.db.person(account, &from.to_lowercase(), &from).await;
             }
-            let sender = if outgoing { "" } else { from.as_str() };
+            // (nicks are the same person whatever their case: the key is lowercase, the name as written)
+            let key = from.to_lowercase();
+            let sender = if outgoing { "" } else { key.as_str() };
             if let Some(id) = store(shared, conversation, outgoing, sender, sent_ms, &text).await? {
                 if !styles.is_empty() {
                     shared.db.set_styles(id, &styles).await.map_err(|e| e.to_string())?;
