@@ -1164,9 +1164,11 @@ impl<S: Store> Manager<S, Registered> {
                                         ..
                                     }) = &content.body
                                     {
+                                        let mut whole = false;
                                         match retrieve_contacts(&mut state.push_service, contacts).await {
                                             Ok(contacts) => {
                                                 info!("saving contacts");
+                                                whole = true;
                                                 for contact in contacts {
                                                     if let Err(error) = state
                                                         .store
@@ -1174,6 +1176,7 @@ impl<S: Store> Manager<S, Registered> {
                                                         .await
                                                     {
                                                         warn!(%error, "failed to save contacts");
+                                                        whole = false;
                                                         break;
                                                     }
                                                 }
@@ -1183,7 +1186,7 @@ impl<S: Store> Manager<S, Registered> {
                                             }
                                         }
 
-                                        return Some((Received::Contacts, state));
+                                        return Some((Received::Contacts { whole }, state));
                                     }
 
                                     // sticker pack operations

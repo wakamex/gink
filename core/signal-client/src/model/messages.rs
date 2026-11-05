@@ -8,7 +8,8 @@ pub enum Received {
 
     /// Got contacts (only applies if linked to a primary device
     /// Contacts can be later queried in the store.
-    Contacts,
+    /// The contacts the primary device sent were read; `whole` when all of them were saved.
+    Contacts { whole: bool },
 
     /// A message from this person's device, sent at `timestamp`, could not be decrypted. A new
     /// session with them may mend it, after which they can be asked for the message again.

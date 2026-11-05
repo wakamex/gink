@@ -225,6 +225,8 @@ UPDATE accounts SET storage_version = NULL;
     "ALTER TABLE conversations ADD COLUMN admin INTEGER NOT NULL DEFAULT 0;",
     // The styles its sender gave parts of a message's text: bold, italic, struck through, monospace.
     "ALTER TABLE messages ADD COLUMN styles TEXT;",
+    // When the account's contacts were last read whole from its primary device; 0 until they have been.
+    "ALTER TABLE accounts ADD COLUMN contacts_ms INTEGER NOT NULL DEFAULT 0;",
 ];
 
 pub struct Account {
@@ -529,6 +531,15 @@ impl Db {
     pub async fn set_settings(&self, id: i64, read_receipts: bool, typing: bool) -> sqlx::Result<()> {
         sqlx::query("UPDATE accounts SET read_receipts = ?, typing = ? WHERE id = ?").bind(read_receipts).bind(typing).bind(id).execute(&self.0).await?;
         Ok(())
+    }
+
+    /// Whether the account's contacts have been read whole from its primary device.
+    pub async fn contacts_read(&self, id: i64) -> sqlx::Result<bool> {
+        sqlx::query_scalar("SELECT contacts_ms > 0 FROM accounts WHERE id = ?").bind(id).fetch_one(&self.0).await
+    }
+
+    pub async fn set_contacts_read(&self, id: i64, now_ms: i64) -> sqlx::Result<()> {
+        sqlx::query("UPDATE accounts SET contacts_ms = ?2 WHERE id = ?1").bind(id).bind(now_ms).execute(&self.0).await.map(|_| ())
     }
 
     pub async fn storage_version(&self, id: i64) -> sqlx::Result<Option<i64>> {

@@ -104,9 +104,8 @@ async fn session(shared: &Arc<Shared>, account: i64, device_name: &str, commands
     let store = SqliteStore::open_with_key(&path, &shared.key, OnNewIdentity::AskToSend).await.map_err(text)?;
     let mut client = if store.is_registered().await {
         let mut client = Manager::load_registered(store).await.map_err(text)?;
-        // (a contacts sync that never arrived, or could not be read, is asked for again)
-        let known = client.store().contacts().await.map(|contacts| contacts.count()).unwrap_or(0);
-        if known == 0 {
+        // (contacts that never arrived, or could not be read whole, are asked for again)
+        if !shared.db.contacts_read(account).await.map_err(text)? {
             client.request_contacts().await.map_err(text)?;
         }
         client
@@ -255,7 +254,12 @@ async fn session(shared: &Arc<Shared>, account: i64, device_name: &str, commands
                     caught_up.take().map(|tx| tx.send(()));
                     again = Some(tokio::time::Instant::now());
                 }
-                Some(Received::Contacts) => conversations_from_store(shared, account, &client).await,
+                Some(Received::Contacts { whole }) => {
+                    if whole {
+                        let _ = shared.db.set_contacts_read(account, now_ms()).await;
+                    }
+                    conversations_from_store(shared, account, &client).await
+                },
                 Some(Received::Content(content)) => {
                     // (a message that was dealt with is taken off the client's store; one that
                     // failed stays there, to be tried once more at the next start)
