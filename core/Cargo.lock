@@ -1227,6 +1227,7 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 name = "gsignal_core"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "ed25519-dalek",
  "futures",
  "getrandom 0.3.4",
@@ -1239,6 +1240,7 @@ dependencies = [
  "signal-store",
  "sqlx",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 

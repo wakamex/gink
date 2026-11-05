@@ -48,6 +48,12 @@ Some limits belong to Signal's own programs and not to the protocol: another pro
 | Of a message's files, only the first is shown unless they are pictures or videos: a message with three sound files shows one player | `isAudio` in `ts/util/Attachment.std.ts` looks at the first file alone, and `Message.dom.tsx` draws that one | Shows every file of a message it receives. Sends pictures and videos together with the text, and each other file as a message of its own |
 | A message being written takes at most 32 files | `ts/state/ducks/composer.preload.ts` stops adding at 32 | Takes at most 32 as well |
 
+## IRC
+
+gink is also a client for an [IRC](https://en.wikipedia.org/wiki/IRC) bouncer such as [soju](https://soju.im/), a server that stays on the IRC networks and keeps their history while gink is closed, so a phone and a computer can both be the same person there. Add one with Add IRC in the status bar, or `--add-irc ADDRESS`, giving the bouncer's address as `ircs://USER:PASSWORD@HOST:PORT?sha256=FINGERPRINT`. The fingerprint is the SHA-256 of the bouncer's certificate, `openssl x509 -in cert.pem -outform DER | sha256sum`, which gink takes in place of a certificate authority's, as a bouncer on a home network has none. `irc://` without TLS is for a bouncer on the same machine.
+
+gink speaks only standard [IRCv3](https://ircv3.net/): SASL to sign in, the list of networks the bouncer holds (`soju.im/bouncer-networks`), the history of what came while it was closed (`draft/chathistory`), and what was read on another client (`draft/read-marker`). A channel is a group conversation and a person a direct one. A line that starts with `/me`, `/join`, `/part`, `/msg` or `/nick` is that command, and `//` starts a line with a slash. IRC carries text alone, so its conversations have no files, reactions, replies, edits or timers.
+
 ## Build and run
 
 Building needs [Zig](https://ziglang.org/) 0.17, [Cargo](https://doc.rust-lang.org/cargo/) and the [Protocol Buffers](https://protobuf.dev/) compiler `protoc` on the path, or named by `PROTOC`. The Windows build also needs Rust's `x86_64-pc-windows-gnu` target (`rustup target add x86_64-pc-windows-gnu`) and `x86_64-w64-mingw32-dlltool` from [MinGW-w64](https://www.mingw-w64.org/)'s binutils, packaged as `binutils-mingw-w64-x86-64` on Debian and Ubuntu and `mingw64-binutils` on Fedora.

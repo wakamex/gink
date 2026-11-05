@@ -1,6 +1,7 @@
 //! The protocol core behind `include/gsignal_core.h`.
 
 mod db;
+mod irc;
 mod log;
 mod shared;
 mod signal;
@@ -175,12 +176,15 @@ pub unsafe extern "C" fn gsc_key_new(key: *mut u8) -> c_int {
 }
 
 fn start(shared: &Arc<Shared>, commands: &mut HashMap<i64, mpsc::UnboundedSender<Command>>, id: i64, protocol: &str, device_name: &str, label: &str) -> bool {
-    if protocol != "signal" {
-        return false;
-    }
-    let status = Status { protocol: "signal", label: label.to_owned(), state: State::Connecting, last_received_ms: 0, undecryptable: 0, error: String::new() };
+    // (an IRC account's device name is its bouncer's address)
+    let (protocol, spawn): (&'static str, fn(Arc<Shared>, i64, String) -> mpsc::UnboundedSender<Command>) = match protocol {
+        "signal" => ("signal", signal::spawn),
+        "irc" => ("irc", irc::spawn),
+        _ => return false,
+    };
+    let status = Status { protocol, label: label.to_owned(), state: State::Connecting, last_received_ms: 0, undecryptable: 0, error: String::new() };
     shared.statuses.lock().unwrap().insert(id, status);
-    commands.insert(id, signal::spawn(shared.clone(), id, device_name.to_owned()));
+    commands.insert(id, spawn(shared.clone(), id, device_name.to_owned()));
     true
 }
 
@@ -252,7 +256,7 @@ pub unsafe extern "C" fn gsc_account_add(core: *mut Core, protocol: *const c_cha
     let core = unsafe { &mut *core };
     let protocol = unsafe { CStr::from_ptr(protocol) }.to_string_lossy();
     let device_name = unsafe { CStr::from_ptr(device_name) }.to_string_lossy();
-    if protocol != "signal" {
+    if protocol != "signal" && protocol != "irc" {
         return -1;
     }
     let Ok(id) = core.runtime.block_on(core.shared.db.add_account(&protocol, &device_name)) else { return -1 };

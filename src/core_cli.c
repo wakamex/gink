@@ -147,7 +147,7 @@ static void obey(gsc_core *core, char *line) {
 }
 
 int main(int argc, char **argv) {
-    const char *data = NULL, *to = NULL, *text = NULL, *read = NULL, *typing = NULL, *reset = NULL;
+    const char *data = NULL, *to = NULL, *text = NULL, *read = NULL, *typing = NULL, *reset = NULL, *irc = NULL;
     double seconds = -1;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--data") && i + 1 < argc) data = argv[++i];
@@ -156,9 +156,10 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--read") && i + 1 < argc) read = argv[++i];
         else if (!strcmp(argv[i], "--typing") && i + 1 < argc) typing = argv[++i];
         else if (!strcmp(argv[i], "--reset") && i + 1 < argc) reset = argv[++i];
+        else if (!strcmp(argv[i], "--add-irc") && i + 1 < argc) irc = argv[++i];
         else data = NULL, i = argc;
     }
-    if (!data) return fprintf(stderr, "usage: gink-core --data DIR [--seconds N] [--send TITLE TEXT] [--typing TITLE] [--reset TITLE] [--read TITLE]\n"), 2;
+    if (!data) return fprintf(stderr, "usage: gink-core --data DIR [--add-irc ADDRESS] [--seconds N] [--send TITLE TEXT] [--typing TITLE] [--reset TITLE] [--read TITLE]\n"), 2;
 
     char dir[1024], *error = NULL;
     uint8_t key[GSC_KEY_LEN];
@@ -169,7 +170,12 @@ int main(int argc, char **argv) {
     gsc_core *core = gsc_open(dir, key, wake, NULL, &error);
     if (!core) return fprintf(stderr, "%s\n", error), 1;
     gsc_account accounts[8];
-    if (gsc_accounts(core, accounts, 8) == 0) gsc_account_add(core, "signal", "gink");
+    int naccounts = gsc_accounts(core, accounts, 8);
+    // (an IRC bouncer's account is added once; a profile with no account and none asked for links Signal)
+    bool has_irc = false;
+    for (int i = 0; i < naccounts && i < 8; i++) has_irc |= !strcmp(accounts[i].protocol, "irc");
+    if (irc && !has_irc) gsc_account_add(core, "irc", irc);
+    else if (!irc && naccounts == 0) gsc_account_add(core, "signal", "gink");
 
     nconversations = gsc_conversations(core, conversations, 1024);
     for (int c = 0; c < nconversations && c < 1024; c++) printf("listed %s %s\n", conversations[c].request ? "request" : conversations[c].kind == GSC_GROUP ? "group" : "direct", conversations[c].title);

@@ -190,6 +190,8 @@ typedef struct {
     int selected;           // the row selected in the conversation list, a place in `listed`
     int64_t open;           // the conversation whose messages are shown, 0 for none
     bool narrow;            // the window has room for the list or a conversation, not both (a phone held upright)
+    bool adding_irc;        // the field for an IRC bouncer's address is open under the status bar
+    char irc_address[512];
     bool focused;           // the window has the keyboard: only then is what it shows counted as read
     // The code to show while an account waits to be linked.
     int64_t code_account;
@@ -489,106 +491,116 @@ static void health(app *a, gs_ui *ui, gs_rect *r) {
         gs_rect row = gs_cut_top(r, s->row);
         gs_ui_fill(ui, row, s->panel);
         row = gs_inset(row, 8), row.y -= 8, row.h += 16;
-        // At the far right, the size of the text: a field to type it in, then buttons that take one
-        // off and add one. The buttons are outermost so that they stay under the pointer as the text,
-        // and with it everything else in this bar, grows or shrinks.
-        float button = s->row - 8;  // (their height; they are a row wide, which a "+" needs at the smallest sizes)
-        gs_rect more = gs_cut_right(&row, s->row), less = gs_cut_right(&row, s->row), size = gs_cut_right(&row, s->row * 1.4f);
-        more.y += 4, more.h = button, less.y += 4, less.h = button, size.y += 4, size.h = button;
-        double before = a->font_size;
-        if (gs_ui_button(ui, more, "+")) a->font_size += 1;
-        if (gs_ui_button(ui, less, "-")) a->font_size -= 1;
-        gs_ui_number(ui, size, "font-size", &a->font_size, FONT_MIN, FONT_MAX, 1, 0);
-        bool changed = a->font_size != before;
-        gs_cut_right(&row, 16);
-        // The rest of the choices and the figures for judging them are drawn only when the settings
-        // file says "controls 1": the font, the colours, the room between lines, the font's height and
-        // the count of characters in view. Without it they stay as the file, or the defaults, have them.
-        if (a->controls) {
-            // (which renderer draws, and so whether videos can be decoded by the graphics card)
-            const char *drawn_by = SDL_GetRendererName(a->renderer);
-            gs_ui_text(ui, gs_cut_right(&row, gs_ui_text_width(ui, drawn_by, s->small_px)), drawn_by, s->small_px, s->muted, 1);
+        // The settings, the build and its notices are on the first account's row alone.
+        bool changed = false;
+        if (i == 0) {
+            // At the far right, the size of the text: a field to type it in, then buttons that take one
+            // off and add one. The buttons are outermost so that they stay under the pointer as the text,
+            // and with it everything else in this bar, grows or shrinks.
+            float button = s->row - 8;  // (their height; they are a row wide, which a "+" needs at the smallest sizes)
+            gs_rect more = gs_cut_right(&row, s->row), less = gs_cut_right(&row, s->row), size = gs_cut_right(&row, s->row * 1.4f);
+            more.y += 4, more.h = button, less.y += 4, less.h = button, size.y += 4, size.h = button;
+            double before = a->font_size;
+            if (gs_ui_button(ui, more, "+")) a->font_size += 1;
+            if (gs_ui_button(ui, less, "-")) a->font_size -= 1;
+            gs_ui_number(ui, size, "font-size", &a->font_size, FONT_MIN, FONT_MAX, 1, 0);
+            changed = a->font_size != before;
             gs_cut_right(&row, 16);
-            // Its font, which a click exchanges for the next of those there are.
-            const char *font = font_names[a->font];
-            gs_rect choice = gs_cut_right(&row, gs_ui_text_width(ui, font, s->small_px));
-            gs_ui_text(ui, choice, font, s->small_px, gs_ui_hovered(ui, choice) ? s->accent : s->muted, 1);
-            if (gs_ui_clicked(ui, choice)) a->font = (a->font + 1) % FONTS, changed = true;
+            // Another account: an IRC bouncer, by its address (see gsc_account_add).
+            gs_rect add = gs_cut_right(&row, gs_ui_text_width(ui, "Add IRC", s->small_px));
+            gs_ui_text(ui, add, "Add IRC", s->small_px, gs_ui_hovered(ui, add) || a->adding_irc ? s->accent : s->muted, 1);
+            if (gs_ui_clicked(ui, add)) a->adding_irc = !a->adding_irc, gs_ui_focus(ui, "irc-address");
             gs_cut_right(&row, 16);
-            // How much the messages in view say, as a count of their characters, for judging a font and a
-            // size by what they fit. (Square or round pictures has no link here for now; square is the default.)
-            // With it, in pixels, how tall the font's letters stand from their lowest to their highest, and how
-            // much room is left between that height on one line and on the next.
-            // The room between lines is a field: what the font asks is 0, and a number adds that many points.
-            char shown[96];
-            float ascent = 0, descent = 0, pixels = s->text_px * gs_ui_scale(ui);
-            gs_fontset_vmetrics(a->fonts[a->font], pixels, &ascent, &descent, NULL);
-            snprintf(shown, sizeof shown, "%d chars shown", a->shown_chars);
-            gs_ui_text(ui, gs_cut_right(&row, gs_ui_text_width(ui, shown, s->small_px)), shown, s->small_px, s->muted, 1);
-            gs_cut_right(&row, 16);
-            gs_rect extra = gs_cut_right(&row, s->row * 1.2f);
-            extra.y += 4, extra.h = button;
-            double spaced = a->line_extra;
-            gs_ui_number(ui, extra, "line-extra", &a->line_extra, 0, LINE_EXTRA_MAX, 1, 0);
-            changed |= a->line_extra != spaced;
-            gs_cut_right(&row, 6);
-            snprintf(shown, sizeof shown, "font %.1f px    line spacing", ascent - descent);
-            gs_ui_text(ui, gs_cut_right(&row, gs_ui_text_width(ui, shown, s->small_px)), shown, s->small_px, s->muted, 1);
-            gs_cut_right(&row, 16);
-            // The colours: as the interface came, or softer.
-            const char *colours = a->soft ? "Soft colours" : "Sharp colours";
-            choice = gs_cut_right(&row, gs_ui_text_width(ui, colours, s->small_px));
-            gs_ui_text(ui, choice, colours, s->small_px, gs_ui_hovered(ui, choice) ? s->accent : s->muted, 1);
-            if (gs_ui_clicked(ui, choice)) a->soft = !a->soft, changed = true;
-            gs_cut_right(&row, 16);
-        }
-        // Whether each message has a thin bar in its writer's colour down its left, beside the
-        // coloured names (the other ways of marking turns are chosen in the settings file alone).
-        if (a->turns == TURNS_NAMES || a->turns == TURNS_BARS) {
-            const char *bars = a->turns == TURNS_BARS ? "Bars on" : "Bars off";
-            gs_rect choice = gs_cut_right(&row, gs_ui_text_width(ui, bars, s->small_px));
-            gs_ui_text(ui, choice, bars, s->small_px, gs_ui_hovered(ui, choice) ? s->accent : s->muted, 1);
-            if (gs_ui_clicked(ui, choice)) a->turns = a->turns == TURNS_BARS ? TURNS_NAMES : TURNS_BARS, changed = true;
-            gs_cut_right(&row, 16);
-        }
-        // Whether a person's messages in quick succession stand as lines under one name.
-        {
-            const char *compact = a->compact ? "Compact on" : "Compact off";
-            gs_rect choice = gs_cut_right(&row, gs_ui_text_width(ui, compact, s->small_px));
-            gs_ui_text(ui, choice, compact, s->small_px, gs_ui_hovered(ui, choice) ? s->accent : s->muted, 1);
-            if (gs_ui_clicked(ui, choice)) a->compact = !a->compact, a->heights_width = 0, changed = true;
-            gs_cut_right(&row, 16);
-        }
-        // A test build that updates itself: whether it does, and, once a new build is in place, a way
-        // to start it now rather than when the user next leaves the program be.
-        if (a->updating) {
-            // (it says it is a test build, and which, as the title does)
-            char said[80];
-            snprintf(said, sizeof said, a->updated ? "Restart to update" : a->update_on ? "Test build %s, updates on" : "Test build %s, updates off", gsc_build());
-            gs_rect choice = gs_cut_right(&row, gs_ui_text_width(ui, said, s->small_px));
-            gs_ui_text(ui, choice, said, s->small_px, a->updated || gs_ui_hovered(ui, choice) ? s->accent : s->muted, 1);
-            if (gs_ui_clicked(ui, choice)) {
-                if (a->updated) a->restart_now = true, wake(NULL);
-                else a->update_on = !a->update_on, set_update_consent(a->update_path, a->update_on), gsc_update_enable(a->update_on);
+            // The rest of the choices and the figures for judging them are drawn only when the settings
+            // file says "controls 1": the font, the colours, the room between lines, the font's height and
+            // the count of characters in view. Without it they stay as the file, or the defaults, have them.
+            if (a->controls) {
+                // (which renderer draws, and so whether videos can be decoded by the graphics card)
+                const char *drawn_by = SDL_GetRendererName(a->renderer);
+                gs_ui_text(ui, gs_cut_right(&row, gs_ui_text_width(ui, drawn_by, s->small_px)), drawn_by, s->small_px, s->muted, 1);
+                gs_cut_right(&row, 16);
+                // Its font, which a click exchanges for the next of those there are.
+                const char *font = font_names[a->font];
+                gs_rect choice = gs_cut_right(&row, gs_ui_text_width(ui, font, s->small_px));
+                gs_ui_text(ui, choice, font, s->small_px, gs_ui_hovered(ui, choice) ? s->accent : s->muted, 1);
+                if (gs_ui_clicked(ui, choice)) a->font = (a->font + 1) % FONTS, changed = true;
+                gs_cut_right(&row, 16);
+                // How much the messages in view say, as a count of their characters, for judging a font and a
+                // size by what they fit. (Square or round pictures has no link here for now; square is the default.)
+                // With it, in pixels, how tall the font's letters stand from their lowest to their highest, and how
+                // much room is left between that height on one line and on the next.
+                // The room between lines is a field: what the font asks is 0, and a number adds that many points.
+                char shown[96];
+                float ascent = 0, descent = 0, pixels = s->text_px * gs_ui_scale(ui);
+                gs_fontset_vmetrics(a->fonts[a->font], pixels, &ascent, &descent, NULL);
+                snprintf(shown, sizeof shown, "%d chars shown", a->shown_chars);
+                gs_ui_text(ui, gs_cut_right(&row, gs_ui_text_width(ui, shown, s->small_px)), shown, s->small_px, s->muted, 1);
+                gs_cut_right(&row, 16);
+                gs_rect extra = gs_cut_right(&row, s->row * 1.2f);
+                extra.y += 4, extra.h = button;
+                double spaced = a->line_extra;
+                gs_ui_number(ui, extra, "line-extra", &a->line_extra, 0, LINE_EXTRA_MAX, 1, 0);
+                changed |= a->line_extra != spaced;
+                gs_cut_right(&row, 6);
+                snprintf(shown, sizeof shown, "font %.1f px    line spacing", ascent - descent);
+                gs_ui_text(ui, gs_cut_right(&row, gs_ui_text_width(ui, shown, s->small_px)), shown, s->small_px, s->muted, 1);
+                gs_cut_right(&row, 16);
+                // The colours: as the interface came, or softer.
+                const char *colours = a->soft ? "Soft colours" : "Sharp colours";
+                choice = gs_cut_right(&row, gs_ui_text_width(ui, colours, s->small_px));
+                gs_ui_text(ui, choice, colours, s->small_px, gs_ui_hovered(ui, choice) ? s->accent : s->muted, 1);
+                if (gs_ui_clicked(ui, choice)) a->soft = !a->soft, changed = true;
+                gs_cut_right(&row, 16);
             }
-            gs_cut_right(&row, 16);
+            // Whether each message has a thin bar in its writer's colour down its left, beside the
+            // coloured names (the other ways of marking turns are chosen in the settings file alone).
+            if (a->turns == TURNS_NAMES || a->turns == TURNS_BARS) {
+                const char *bars = a->turns == TURNS_BARS ? "Bars on" : "Bars off";
+                gs_rect choice = gs_cut_right(&row, gs_ui_text_width(ui, bars, s->small_px));
+                gs_ui_text(ui, choice, bars, s->small_px, gs_ui_hovered(ui, choice) ? s->accent : s->muted, 1);
+                if (gs_ui_clicked(ui, choice)) a->turns = a->turns == TURNS_BARS ? TURNS_NAMES : TURNS_BARS, changed = true;
+                gs_cut_right(&row, 16);
+            }
+            // Whether a person's messages in quick succession stand as lines under one name.
+            {
+                const char *compact = a->compact ? "Compact on" : "Compact off";
+                gs_rect choice = gs_cut_right(&row, gs_ui_text_width(ui, compact, s->small_px));
+                gs_ui_text(ui, choice, compact, s->small_px, gs_ui_hovered(ui, choice) ? s->accent : s->muted, 1);
+                if (gs_ui_clicked(ui, choice)) a->compact = !a->compact, a->heights_width = 0, changed = true;
+                gs_cut_right(&row, 16);
+            }
+            // A test build that updates itself: whether it does, and, once a new build is in place, a way
+            // to start it now rather than when the user next leaves the program be.
+            if (a->updating) {
+                // (it says it is a test build, and which, as the title does)
+                char said[80];
+                snprintf(said, sizeof said, a->updated ? "Restart to update" : a->update_on ? "Test build %s, updates on" : "Test build %s, updates off", gsc_build());
+                gs_rect choice = gs_cut_right(&row, gs_ui_text_width(ui, said, s->small_px));
+                gs_ui_text(ui, choice, said, s->small_px, a->updated || gs_ui_hovered(ui, choice) ? s->accent : s->muted, 1);
+                if (gs_ui_clicked(ui, choice)) {
+                    if (a->updated) a->restart_now = true, wake(NULL);
+                    else a->update_on = !a->update_on, set_update_consent(a->update_path, a->update_on), gsc_update_enable(a->update_on);
+                }
+                gs_cut_right(&row, 16);
+            }
+            // (what an update did, said once until clicked)
+            if (a->notice[0]) {
+                gs_rect choice = gs_cut_right(&row, gs_ui_text_width(ui, a->notice, s->small_px));
+                gs_ui_text(ui, choice, a->notice, s->small_px, s->accent, 1);
+                if (gs_ui_clicked(ui, choice)) a->notice[0] = 0;
+                gs_cut_right(&row, 16);
+            }
         }
-        // (what an update did, said once until clicked)
-        if (a->notice[0]) {
-            gs_rect choice = gs_cut_right(&row, gs_ui_text_width(ui, a->notice, s->small_px));
-            gs_ui_text(ui, choice, a->notice, s->small_px, s->accent, 1);
-            if (gs_ui_clicked(ui, choice)) a->notice[0] = 0;
-            gs_cut_right(&row, 16);
-        }
-        // The way to the account's notes to itself, which the list shows only once written.
-        gs_rect note = gs_cut_right(&row, gs_ui_text_width(ui, "Note to Self", s->small_px));
-        gs_ui_text(ui, note, "Note to Self", s->small_px, gs_ui_hovered(ui, note) ? s->accent : s->muted, 1);
-        if (gs_ui_clicked(ui, note)) {
+        // The way to a Signal account's notes to itself, which the list shows only once written.
+        bool signal = !strcmp(ac->protocol, "signal");
+        gs_rect note = signal ? gs_cut_right(&row, gs_ui_text_width(ui, "Note to Self", s->small_px)) : (gs_rect){ 0 };
+        if (signal) gs_ui_text(ui, note, "Note to Self", s->small_px, gs_ui_hovered(ui, note) ? s->accent : s->muted, 1);
+        if (signal && gs_ui_clicked(ui, note)) {
             int64_t id = gsc_note_to_self(a->core, ac->id);
             for (int c = 0; id && c < a->nconversations; c++)
                 if (a->conversations[c].id == id) a->query[0] = 0, open_conversation(a, c, MESSAGES_FIRST), gs_ui_focus(ui, "draft");
         }
-        gs_cut_right(&row, 16);
+        if (signal) gs_cut_right(&row, 16);
         if (changed) apply_settings(a, ui, true), wake(NULL);  // (the next frame is drawn with what was chosen)
         // (the account's state alone: its number, its last arrival and its count of undecryptable
         // messages are in the log and in the conversations themselves)
@@ -597,6 +609,20 @@ static void health(app *a, gs_ui *ui, gs_rect *r) {
         float w = gs_ui_text(ui, row, line, s->small_px, ac->state == GSC_ACCOUNT_ONLINE ? s->text : s->muted, -1);
         gs_cut_left(&row, w + 16);
         if (ac->error[0]) gs_ui_text(ui, row, ac->error, s->small_px, s->warning, -1);
+    }
+    // (the address holds the bouncer's password, so it is shown only while typed)
+    if (a->adding_irc) {
+        gs_rect row = gs_cut_top(r, s->row + 8);
+        gs_ui_fill(ui, row, s->panel);
+        row = gs_inset(row, 4);
+        gs_rect add = gs_cut_right(&row, 72);
+        gs_cut_right(&row, 8);
+        gs_ui_input(ui, row, "irc-address", a->irc_address, sizeof a->irc_address, "ircs://USER:PASSWORD@HOST:PORT?sha256=FINGERPRINT", GS_UI_MASKED | GS_UI_REVEAL);
+        if ((gs_ui_button(ui, add, "Add") || gs_ui_key(ui, SDLK_RETURN, 0)) && a->irc_address[0]) {
+            gsc_account_add(a->core, "irc", a->irc_address);
+            SDL_memset(a->irc_address, 0, sizeof a->irc_address), a->adding_irc = false;
+        }
+        if (gs_ui_key(ui, SDLK_ESCAPE, 0) && !a->irc_address[0]) a->adding_irc = false;
     }
 }
 
@@ -2023,6 +2049,16 @@ body:
     return gs_ui_clicked(ui, *anchor) ? ROW_MENU : ROW_NOTHING;
 }
 
+// Whether the open conversation is on an IRC account, which has no reactions, replies, edits,
+// deletions, files or timers: plain lines of text.
+static bool open_on_irc(const app *a) {
+    for (int i = 0; i < a->nconversations; i++)
+        if (a->conversations[i].id == a->open)
+            for (int k = 0; k < a->naccounts; k++)
+                if (a->accounts[k].id == a->conversations[i].account) return !strcmp(a->accounts[k].protocol, "irc");
+    return false;
+}
+
 // The menu of the message the user asked about, drawn over the list beside the message's "...":
 // six reactions in a row, then a line each to take the account's reaction back, reply, and for the
 // account's own messages edit or delete for everyone. It opens below the "..." or, where the list
@@ -2038,26 +2074,28 @@ static void message_menu(app *a, gs_ui *ui, gs_rect anchor, gs_rect list, const 
     int nlines = 0, take_back = -1, reply = -1, copy = -1, edit = -1, delete = -1, resend = -1, reveal = -1, change_again = -1, change_drop = -1;
     // A message that no one has received can only be sent again or thrown away.
     bool unsent = m->outgoing && m->status < GSC_SENT;
+    // (on IRC a message is only copied, or sent again: no reactions row either)
+    bool irc = open_on_irc(a), plain = unsent || irc;
     if (m->reaction[0]) lines[take_back = nlines++] = "Remove my reaction";
-    if (!unsent) lines[reply = nlines++] = "Reply";
+    if (!plain) lines[reply = nlines++] = "Reply";
     if (m->text[0]) lines[copy = nlines++] = "Copy text";
     if (m->hidden[0]) lines[reveal = nlines++] = a->revealed == m->id ? "Cover the spoiler" : "Show the spoiler";
     if (m->status == GSC_NOT_SENT && m->outgoing) lines[resend = nlines++] = "Send again";
     if (m->status == GSC_HELD && m->outgoing) lines[resend = nlines++] = "Send anyway";
     if (m->changing == 2) lines[change_again = nlines++] = "Send the change again", lines[change_drop = nlines++] = "Drop the change";
     if (m->outgoing) {
-        if (!unsent) lines[edit = nlines++] = "Edit";
-        lines[delete = nlines++] = unsent ? "Discard" : "Delete for everyone";
+        if (!plain) lines[edit = nlines++] = "Edit";
+        if (unsent || !irc) lines[delete = nlines++] = unsent ? "Discard" : "Delete for everyone";
     }
-    float cell = unsent ? 0 : s->row + 4, width = unsent ? 0 : cell * 6 + 8;
+    float cell = plain ? 0 : s->row + 4, width = plain ? 0 : cell * 6 + 8;
     for (int i = 0; i < nlines; i++) width = SDL_max(width, gs_ui_text_width(ui, lines[i], s->text_px) + 24);
-    float height = (unsent ? 4 : cell + 8) + nlines * s->row + 4;
+    float height = (plain ? 4 : cell + 8) + nlines * s->row + 4;
     gs_rect menu = { anchor.x + anchor.w - width, anchor.y + anchor.h + 2, width, height };
     if (menu.y + menu.h > list.y + list.h) menu.y = SDL_max(list.y, anchor.y - 2 - height);
     bool chosen = gs_ui_key(ui, SDLK_ESCAPE, 0) || (gs_ui_clicked(ui, a->area) && !gs_ui_hovered(ui, menu));
     gs_ui_fill(ui, menu, s->panel), gs_ui_frame(ui, menu, s->border);
     gs_rect inner = gs_inset(menu, 4), top = gs_cut_top(&inner, cell);
-    for (int i = 0; i < 6 && !unsent; i++) {
+    for (int i = 0; i < 6 && !plain; i++) {
         gs_rect at = gs_cut_left(&top, cell);
         bool mine = !strcmp(m->reaction, emoji[i]);
         if (mine || gs_ui_hovered(ui, at)) gs_ui_fill(ui, at, mine ? s->raised : s->border);
@@ -2065,7 +2103,7 @@ static void message_menu(app *a, gs_ui *ui, gs_rect anchor, gs_rect list, const 
         // (the one already given is taken back by choosing it again)
         if (gs_ui_clicked(ui, at)) gsc_react(a->core, m->id, mine ? "" : emoji[i]), chosen = true;
     }
-    if (!unsent) gs_cut_top(&inner, 4);
+    if (!plain) gs_cut_top(&inner, 4);
     for (int i = 0; i < nlines; i++) {
         gs_rect at = gs_cut_top(&inner, s->row);
         if (gs_ui_hovered(ui, at)) gs_ui_fill(ui, at, s->border);
@@ -2166,7 +2204,7 @@ static void message_view(app *a, gs_ui *ui, gs_rect r) {
             // (with a line under them, for one who does not administer it, saying why they cannot be removed)
             a->members_panel = (gs_rect){ button.x + button.w - width, button.y + button.h + 4, width, (SDL_min(a->nmembers, 12) + !c->admin) * s->row + 8 };
         }
-        if (c->kind == GSC_DIRECT) {
+        if (c->kind == GSC_DIRECT && !open_on_irc(a)) {
             static const int choices[] = { 0, 300, 3600, 28800, 86400, 604800, 2419200 };
             static const char *const names[] = { "Off", "5 minutes", "1 hour", "8 hours", "1 day", "1 week", "4 weeks" };
             int now = gsc_timer(a->core, c->id), shown = -1;
@@ -2200,14 +2238,17 @@ static void message_view(app *a, gs_ui *ui, gs_rect r) {
             gs_ui_clip(ui, NULL);
         }
     }
-    float field_w = r.w - 16 - 72 - 8 - 72 - 8;
+    bool files = !open_on_irc(a);  // (IRC carries text alone)
+    float field_w = r.w - 16 - 72 - 8 - (files ? 72 + 8 : 0);
     gs_rect compose = gs_inset(gs_cut_bottom(&r, gs_ui_textarea_height(ui, a->draft, field_w, 6) + 16), 8);
     gs_rect button = gs_cut_right(&compose, 72);
     bool send = gs_ui_button_primary(ui, gs_cut_bottom(&button, s->row), "Send");
     gs_cut_right(&compose, 8);
-    gs_rect attach = gs_cut_left(&compose, 72);
-    if (gs_ui_button(ui, gs_cut_bottom(&attach, s->row), "Attach")) SDL_ShowOpenFileDialog(chose_files, NULL, a->window, NULL, 0, NULL, true);
-    gs_cut_left(&compose, 8);
+    if (files) {
+        gs_rect attach = gs_cut_left(&compose, 72);
+        if (gs_ui_button(ui, gs_cut_bottom(&attach, s->row), "Attach")) SDL_ShowOpenFileDialog(chose_files, NULL, a->window, NULL, 0, NULL, true);
+        gs_cut_left(&compose, 8);
+    }
     // A conversation just opened, by any means, can be written in at once: from the frame after the
     // click that opened it, since in that one the field lets go of the keyboard for a press elsewhere.
     if (a->to_draft && (a->held || a->pressed)) wake(NULL);
@@ -2680,7 +2721,7 @@ static bool busy(const app *a) {
 
 int main(int argc, char **argv) {
     static app a;
-    const char *data = NULL, *shot = NULL, *open = NULL;
+    const char *data = NULL, *shot = NULL, *open = NULL, *irc = NULL;
     double after = 5;
     int scroll_frames = 0, width = 900, height = 600;
     bool offscreen = false, watched = false, hidden = false;
@@ -2691,6 +2732,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--scroll-test") && i + 1 < argc) scroll_frames = SDL_atoi(argv[++i]);
         else if (!strcmp(argv[i], "--after") && i + 1 < argc) after = SDL_atof(argv[++i]);
         else if (!strcmp(argv[i], "--offscreen")) offscreen = true;
+        else if (!strcmp(argv[i], "--add-irc") && i + 1 < argc) irc = argv[++i];
         else if (!strcmp(argv[i], "--watched")) watched = true;
         else if (!strcmp(argv[i], "--hidden")) hidden = true;
         else if (!strcmp(argv[i], "--restarted")) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
@@ -2754,6 +2796,14 @@ int main(int argc, char **argv) {
     }
     if (!database_key(dir, key)) return SDL_Log("no database key could be made or kept in %s", dir), 1;
     if (!(a.core = gsc_open(dir, key, wake, NULL, &error))) return SDL_Log("%s", error), 1;
+    // An IRC bouncer is added once, from --add-irc ADDRESS (see gsc_account_add).
+    if (irc) {
+        gsc_account known[MAX_ACCOUNTS];
+        int n = SDL_min(gsc_accounts(a.core, known, MAX_ACCOUNTS), MAX_ACCOUNTS);
+        bool has = false;
+        for (int i = 0; i < n; i++) has |= !strcmp(known[i].protocol, "irc");
+        if (!has) gsc_account_add(a.core, "irc", irc);
+    }
     a.naccounts = SDL_min(gsc_accounts(a.core, a.accounts, MAX_ACCOUNTS), MAX_ACCOUNTS);
     a.wanted = MESSAGES_FIRST;
     read_conversations(&a);

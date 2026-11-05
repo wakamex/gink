@@ -43,7 +43,7 @@ typedef enum {
 
 typedef struct {
     int64_t id;
-    const char *protocol;      // "signal"
+    const char *protocol;      // "signal" or "irc"
     const char *label;         // the account's own name for itself, such as a phone number; "" until known
     gsc_account_state state;
     int64_t last_received_ms;  // when anything last arrived, in Unix milliseconds; 0 for never
@@ -53,6 +53,7 @@ typedef struct {
 
 // Adds an account and starts signing it in as a device called device_name. Returns its id, or -1
 // for an unknown protocol.
+// For "irc", device_name is the address of the IRC bouncer, irc[s]://USER:PASSWORD@HOST:PORT[?sha256=FINGERPRINT].
 int64_t gsc_account_add(gsc_core *core, const char *protocol, const char *device_name);
 // Writes up to max accounts to out and returns how many there are in all.
 int gsc_accounts(gsc_core *core, gsc_account *out, int max);

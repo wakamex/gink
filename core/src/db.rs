@@ -1168,6 +1168,45 @@ impl Db {
     }
 
     /// Marks as read one message read on another of the account's devices. Returns its conversation.
+    /// The time of a conversation's newest message, 0 when it has none: where a backend that keeps
+    /// history on its server asks for what came after.
+    pub async fn newest_ms(&self, conversation: i64) -> sqlx::Result<i64> {
+        sqlx::query_scalar("SELECT COALESCE(MAX(sent_ms), 0) FROM messages WHERE conversation_id = ?").bind(conversation).fetch_one(&self.0).await
+    }
+
+    /// The time of the newest message in any of an account's conversations, 0 when it has none.
+    pub async fn newest_ms_of(&self, account: i64) -> sqlx::Result<i64> {
+        sqlx::query_scalar("SELECT COALESCE(MAX(m.sent_ms), 0) FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.account_id = ?").bind(account).fetch_one(&self.0).await
+    }
+
+    /// Marks a conversation's messages read up to a time, as another device of the account said.
+    /// Returns whether any were unread.
+    pub async fn mark_read_until(&self, conversation: i64, until_ms: i64, now_ms: i64) -> sqlx::Result<bool> {
+        let done = sqlx::query("UPDATE messages SET read_ms = ?3 WHERE conversation_id = ?1 AND outgoing = 0 AND read_ms IS NULL AND sent_ms <= ?2")
+            .bind(conversation)
+            .bind(until_ms)
+            .bind(now_ms)
+            .execute(&self.0)
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// The text of a conversation's message from a sender at a time, if one is held.
+    pub async fn text_at(&self, conversation: i64, sender: &str, sent_ms: i64) -> sqlx::Result<Option<String>> {
+        sqlx::query_scalar("SELECT text FROM messages WHERE conversation_id = ? AND sender = ? AND sent_ms = ?").bind(conversation).bind(sender).bind(sent_ms).fetch_optional(&self.0).await
+    }
+
+    /// Gives a sent message a time and text, unless another of the conversation's messages from the
+    /// same sender has that time. Returns whether it did.
+    pub async fn set_sent(&self, message: i64, sent_ms: i64, text: &str) -> sqlx::Result<bool> {
+        let done = sqlx::query("UPDATE OR IGNORE messages SET sent_ms = ?2, text = ?3 WHERE id = ?1").bind(message).bind(sent_ms).bind(text).execute(&self.0).await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    pub async fn forget_message(&self, message: i64) -> sqlx::Result<()> {
+        sqlx::query("DELETE FROM messages WHERE id = ?").bind(message).execute(&self.0).await.map(|_| ())
+    }
+
     pub async fn mark_read_elsewhere(&self, account: i64, sender: &str, sent_ms: i64, now_ms: i64) -> sqlx::Result<Option<i64>> {
         let row = sqlx::query(
             "UPDATE messages SET read_ms = ?4, expires_ms = CASE WHEN expire_s > 0 THEN ?4 + expire_s * 1000 END
