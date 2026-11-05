@@ -1191,6 +1191,23 @@ impl Db {
         Ok(done.rows_affected() > 0)
     }
 
+    /// An account's messages whose text holds IRC formatting codes.
+    pub async fn coded_texts(&self, account: i64) -> sqlx::Result<Vec<(i64, String)>> {
+        let rows = sqlx::query(
+            "SELECT m.id, m.text FROM messages m JOIN conversations c ON c.id = m.conversation_id
+             WHERE c.account_id = ? AND (instr(m.text, char(2)) OR instr(m.text, char(3)) OR instr(m.text, char(4)) OR instr(m.text, char(15))
+               OR instr(m.text, char(17)) OR instr(m.text, char(22)) OR instr(m.text, char(29)) OR instr(m.text, char(30)) OR instr(m.text, char(31)))",
+        )
+        .bind(account)
+        .fetch_all(&self.0)
+        .await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    pub async fn set_text_and_styles(&self, message: i64, text: &str, styles: &str) -> sqlx::Result<()> {
+        sqlx::query("UPDATE messages SET text = ?2, styles = NULLIF(?3, '') WHERE id = ?1").bind(message).bind(text).bind(styles).execute(&self.0).await.map(|_| ())
+    }
+
     /// The text of a conversation's message from a sender at a time, if one is held.
     pub async fn text_at(&self, conversation: i64, sender: &str, sent_ms: i64) -> sqlx::Result<Option<String>> {
         sqlx::query_scalar("SELECT text FROM messages WHERE conversation_id = ? AND sender = ? AND sent_ms = ?").bind(conversation).bind(sender).bind(sent_ms).fetch_optional(&self.0).await

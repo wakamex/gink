@@ -209,6 +209,49 @@ pub fn format_time(ms: i64) -> String {
     format!("{y:04}-{mo:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z", rem / 3_600_000, rem / 60_000 % 60, rem / 1000 % 60, rem % 1000)
 }
 
+/// IRC's formatting codes taken out of a text: the plain text, and its bold, italic, struck-through
+/// and monospace stretches as the database keeps them, "STYLE START END" lines counted in characters
+/// (Signal's numbers: bold 1, italic 2, strikethrough 4, monospace 5). Colours, underline and reverse
+/// have no style here and are dropped.
+pub fn formatted(text: &str) -> (String, String) {
+    const STYLES: [(char, i32); 4] = [('\u{2}', 1), ('\u{1d}', 2), ('\u{1e}', 4), ('\u{11}', 5)];
+    let mut plain = String::with_capacity(text.len());
+    let (mut open, mut styles): ([Option<usize>; 4], String) = ([None; 4], String::new());
+    let close = |open: &mut [Option<usize>; 4], i: usize, at: usize, styles: &mut String| {
+        if let Some(start) = open[i].take().filter(|&start| start < at) {
+            styles.push_str(&format!("{} {start} {at}\n", STYLES[i].1));
+        }
+    };
+    let mut chars = text.chars().peekable();
+    let mut at = 0;
+    while let Some(c) = chars.next() {
+        if let Some(i) = STYLES.iter().position(|s| s.0 == c) {
+            if open[i].is_some() { close(&mut open, i, at, &mut styles) } else { open[i] = Some(at) }
+            continue;
+        }
+        match c {
+            '\u{f}' => (0..4).for_each(|i| close(&mut open, i, at, &mut styles)),
+            '\u{1f}' | '\u{16}' => {},
+            // (a colour: up to two digits, and a background after a comma)
+            '\u{3}' | '\u{4}' => {
+                // (two decimal digits for a colour number, six hex for a colour written out)
+                let (width, digit): (usize, fn(&char) -> bool) = if c == '\u{3}' { (2, char::is_ascii_digit) } else { (6, char::is_ascii_hexdigit) };
+                let skip = |chars: &mut std::iter::Peekable<std::str::Chars>| (0..width).take_while(|_| chars.next_if(digit).is_some()).count();
+                if skip(&mut chars) > 0 && chars.peek() == Some(&',') && chars.clone().nth(1).is_some_and(|d| digit(&d)) {
+                    chars.next();
+                    skip(&mut chars);
+                }
+            },
+            c => {
+                plain.push(c);
+                at += 1;
+            },
+        }
+    }
+    (0..4).for_each(|i| close(&mut open, i, at, &mut styles));
+    (plain, styles)
+}
+
 fn is_channel(target: &str) -> bool {
     target.starts_with(['#', '&', '!', '+'])
 }
@@ -412,6 +455,11 @@ enum Happened {
 async fn session(shared: &Arc<Shared>, account: i64, address: &str, commands: &mut mpsc::UnboundedReceiver<Command>) -> Result<(), String> {
     let address = parse_address(address)?;
     shared.update(account, |s| (s.state, s.error) = (State::Connecting, String::new()));
+    // (messages kept with IRC's formatting codes still in them, by an earlier build, are read again)
+    for (message, text) in shared.db.coded_texts(account).await.map_err(|e| e.to_string())? {
+        let (plain, styles) = formatted(&text);
+        shared.db.set_text_and_styles(message, &plain, &styles).await.map_err(|e| e.to_string())?;
+    }
     // The bouncer's networks, from a first connection; a server that is not such a bouncer is one network.
     let (mut control, _) = Link::open(&address, None).await?;
     control.send("BOUNCER LISTNETWORKS").await?;
@@ -556,6 +604,7 @@ async fn heard(shared: &Arc<Shared>, account: i64, network: &mut Network, line: 
                 None if text.starts_with('\u{1}') => return Ok(()),  // (other CTCP: versions, pings)
                 None => text.clone(),
             };
+            let (text, styles) = formatted(&text);
             let sent_ms = second(line.time_ms().unwrap_or_else(now_ms));
             let conversation = conversation_for(shared, account, &network.id, &target).await?;
             // The echo of a message sent here takes the server's time.
@@ -579,6 +628,9 @@ async fn heard(shared: &Arc<Shared>, account: i64, network: &mut Network, line: 
             }
             let sender = if outgoing { "" } else { from.as_str() };
             if let Some(id) = store(shared, conversation, outgoing, sender, sent_ms, &text).await? {
+                if !styles.is_empty() {
+                    shared.db.set_styles(id, &styles).await.map_err(|e| e.to_string())?;
+                }
                 // (history comes in a batch: told as a change to the conversation once it is read)
                 if line.tags.contains_key("batch") {
                     shared.push(Event::ConversationChanged { account, conversation });
@@ -678,6 +730,17 @@ mod tests {
         assert_eq!(line.tags["msgid"], "a b");
         assert_eq!(line.time_ms(), Some(1_793_859_120_123));
         assert_eq!(Line::parse("PING :x").unwrap().params, ["x"]);
+    }
+
+    #[test]
+    fn formatting_codes_become_styles() {
+        // (as ChanServ sends a notice on MyAnonamouse's IRC)
+        let (plain, styles) = formatted("To view the \u{2}\u{3}07\u{2}\u{2}General information\u{2}\u{3}\u{2}\u{2}, type: \u{3}03,01!info\u{3} \u{1d}now\u{f} done");
+        assert_eq!(plain, "To view the General information, type: !info now done");
+        assert_eq!(styles, "1 12 31\n2 45 48\n");
+        assert_eq!(formatted("\u{4}ff00aaX\u{11}code").0, "Xcode");
+        assert_eq!(formatted("\u{3},5 keeps a comma").0, ",5 keeps a comma");
+        assert_eq!(formatted("plain").1, "");
     }
 
     #[test]
