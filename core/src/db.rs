@@ -1202,13 +1202,22 @@ impl Db {
         Ok(done.rows_affected() > 0)
     }
 
-    /// Gives an account's messages their sender's key in lowercase, as IRC nicks are keyed.
+    /// Gives an account's messages their sender's key in lowercase, as IRC nicks are keyed, and the
+    /// person under that key the colour the nick as written had.
     pub async fn lowercase_senders(&self, account: i64) -> sqlx::Result<()> {
         sqlx::query("UPDATE OR IGNORE messages SET sender = lower(sender) WHERE sender != lower(sender) AND conversation_id IN (SELECT id FROM conversations WHERE account_id = ?)")
             .bind(account)
             .execute(&self.0)
-            .await
-            .map(|_| ())
+            .await?;
+        sqlx::query(
+            "UPDATE people SET colour = (SELECT MIN(o.colour) FROM people o WHERE o.account_id = people.account_id AND o.key != people.key AND lower(o.key) = people.key)
+             WHERE account_id = ?1 AND colour IS NULL AND key = lower(key)
+               AND EXISTS (SELECT 1 FROM people o WHERE o.account_id = people.account_id AND o.key != people.key AND lower(o.key) = people.key AND o.colour IS NOT NULL)",
+        )
+        .bind(account)
+        .execute(&self.0)
+        .await
+        .map(|_| ())
     }
 
     /// An account's messages whose text holds IRC formatting codes.
