@@ -227,6 +227,9 @@ UPDATE accounts SET storage_version = NULL;
     "ALTER TABLE messages ADD COLUMN styles TEXT;",
     // When the account's contacts were last read whole from its primary device; 0 until they have been.
     "ALTER TABLE accounts ADD COLUMN contacts_ms INTEGER NOT NULL DEFAULT 0;",
+    // Contacts read until now may have been another linked device's answer, which named pictures it
+    // did not hold and so ended early: they are asked for again, from the primary device.
+    "UPDATE accounts SET contacts_ms = 0;",
 ];
 
 pub struct Account {

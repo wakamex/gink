@@ -107,6 +107,7 @@ async fn session(shared: &Arc<Shared>, account: i64, device_name: &str, commands
         // (contacts that never arrived, or could not be read whole, are asked for again)
         if !shared.db.contacts_read(account).await.map_err(text)? {
             client.request_contacts().await.map_err(text)?;
+            crate::log::line(&format!("account {account}: asked the primary device for its contacts"));
         }
         client
     } else {
@@ -255,6 +256,8 @@ async fn session(shared: &Arc<Shared>, account: i64, device_name: &str, commands
                     again = Some(tokio::time::Instant::now());
                 }
                 Some(Received::Contacts { whole }) => {
+                    let held = client.store().contacts().await.map(|c| c.count()).unwrap_or(0);
+                    crate::log::line(&format!("account {account}: contacts arrived, {}; {held} held", if whole { "read whole" } else { "not read whole" }));
                     if whole {
                         let _ = shared.db.set_contacts_read(account, now_ms()).await;
                     }
