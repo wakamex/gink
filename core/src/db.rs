@@ -230,6 +230,8 @@ UPDATE accounts SET storage_version = NULL;
     // Contacts read until now may have been another linked device's answer, which named pictures it
     // did not hold and so ended early: they are asked for again, from the primary device.
     "UPDATE accounts SET contacts_ms = 0;",
+    // A conversation with someone no name was known for was titled with their identifier.
+    "UPDATE conversations SET title = 'Unknown contact' WHERE kind = 0 AND title = key;",
 ];
 
 pub struct Account {

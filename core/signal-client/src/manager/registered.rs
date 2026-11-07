@@ -449,12 +449,13 @@ impl<S: Store> Manager<S, Registered> {
                     Some(Record::Account(record)) => read.account = Some(record),
                     // A person's record carries the names the owner gave them, the name from the
                     // phone's address book and the one they chose themselves, taken in that order,
-                    // and the key their profile is read with.
+                    // then their number and their username, as Signal Desktop names them, and the
+                    // key their profile is read with.
                     Some(Record::Contact(contact)) => {
                         let Ok(aci) = Uuid::parse_str(&contact.aci) else { continue };
                         let join = |given: &str, family: &str| [given, family].iter().filter(|p| !p.is_empty()).copied().collect::<Vec<_>>().join(" ");
                         let nickname = contact.nickname.as_ref().map(|n| join(&n.given, &n.family)).unwrap_or_default();
-                        let names = [nickname, join(&contact.system_given_name, &contact.system_family_name), contact.system_nickname.clone(), join(&contact.given_name, &contact.family_name)];
+                        let names = [nickname, join(&contact.system_given_name, &contact.system_family_name), contact.system_nickname.clone(), join(&contact.given_name, &contact.family_name), contact.e164.clone(), contact.username.clone()];
                         if let Ok(key) = <[u8; 32]>::try_from(&contact.profile_key[..]) {
                             self.store.upsert_profile_key(&aci, ProfileKey::create(key)).await?;
                         }

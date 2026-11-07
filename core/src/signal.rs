@@ -361,11 +361,15 @@ async fn link(shared: &Arc<Shared>, account: i64, device_name: &str, store: Sqli
 /// A person's name: the one the account's own records gave, and failing that what the client can
 /// find out.
 async fn name_of(shared: &Arc<Shared>, account: i64, client: &Client, id: &ServiceId) -> String {
-    match shared.db.person_name(account, &id.service_id_string()).await {
+    let name = match shared.db.person_name(account, &id.service_id_string()).await {
         Ok(name) if !name.is_empty() => name,
         _ => person_name(client, id).await,
-    }
+    };
+    // (with no name, number or username known, as Signal Desktop calls them)
+    if name.is_empty() { UNKNOWN_CONTACT.to_owned() } else { name }
 }
+
+const UNKNOWN_CONTACT: &str = "Unknown contact";
 
 async fn person_name(client: &Client, id: &ServiceId) -> String {
     let store = client.store();
