@@ -521,6 +521,11 @@ async fn session(shared: &Arc<Shared>, account: i64, address: &str, commands: &m
             Happened::Command(None) => return Ok(()),
             Happened::Command(Some(Command::Flush)) => flush(shared, account, &mut networks).await?,
             Happened::Command(Some(Command::MarkRead { conversation })) => {
+                // (read here at once, as the bouncer may not answer: it keeps no read marker for its
+                // own service, BouncerServ)
+                if !shared.db.mark_read(conversation, now_ms()).await.map_err(|e| e.to_string())?.is_empty() {
+                    shared.push(Event::Listed { account, conversation });
+                }
                 if let Ok(Some((_, key, _))) = shared.db.conversation_key(conversation).await
                     && let Some((id, target)) = key.split_once('/')
                     && let Some(network) = networks.iter_mut().find(|n| n.id == id)
