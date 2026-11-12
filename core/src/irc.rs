@@ -26,6 +26,11 @@ use crate::shared::{now_ms, Command, Event, Shared, State};
 const DIRECT: i64 = 0;
 const GROUP: i64 = 1;
 const RETRY: Duration = Duration::from_secs(30);
+/// How long the bouncer has to answer while a connection is opened, and to a PING.
+const ANSWER: Duration = Duration::from_secs(30);
+/// After this long without a line from the bouncer it is sent a PING, to find a connection that died
+/// without closing (the bouncer's host restarting, a network gone).
+const QUIET: Duration = Duration::from_secs(120);
 /// How much history is asked for at once, and for a conversation with none held.
 const HISTORY: usize = 300;
 const CAPS: &[&str] = &["sasl", "server-time", "message-tags", "batch", "echo-message", "multi-prefix", "draft/chathistory", "draft/read-marker", "soju.im/bouncer-networks"];
@@ -422,11 +427,29 @@ async fn run(shared: Arc<Shared>, account: i64, address: String, mut commands: m
             Err(error) => error,
         };
         shared.update(account, |s| (s.state, s.error) = (State::Offline, error));
-        tokio::select! {
-            _ = tokio::time::sleep(RETRY) => {},
-            command = commands.recv() => if command.is_none() { return },
+        // (while offline a conversation the user reads is read here all the same; other commands are dropped)
+        let wait = tokio::time::sleep(RETRY);
+        tokio::pin!(wait);
+        loop {
+            tokio::select! {
+                _ = &mut wait => break,
+                command = commands.recv() => match command {
+                    None => return,
+                    Some(Command::MarkRead { conversation }) => {
+                        if shared.db.mark_read(conversation, now_ms()).await.is_ok_and(|read| !read.is_empty()) {
+                            shared.push(Event::Listed { account, conversation });
+                        }
+                    },
+                    Some(_) => {},
+                },
+            }
         }
     }
+}
+
+/// A step of opening a connection, given ANSWER to finish.
+async fn within<T>(what: &str, step: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+    tokio::time::timeout(ANSWER, step).await.map_err(|_| format!("the bouncer did not answer {what} within {} s", ANSWER.as_secs()))?
 }
 
 /// A message the server is to echo back, so that it takes the server's time.
@@ -445,11 +468,15 @@ struct Network {
     sent: VecDeque<Sent>,
     /// Open batches of history: their reference, and the conversation they fill.
     batches: HashMap<String, Option<String>>,
+    /// When a line last came from the bouncer, and whether it was sent a PING since.
+    heard_at: tokio::time::Instant,
+    pinged: bool,
 }
 
 enum Happened {
     Line(usize, Result<Line, String>),
     Command(Option<Command>),
+    Quiet,
 }
 
 async fn session(shared: &Arc<Shared>, account: i64, address: &str, commands: &mut mpsc::UnboundedReceiver<Command>) -> Result<(), String> {
@@ -463,11 +490,11 @@ async fn session(shared: &Arc<Shared>, account: i64, address: &str, commands: &m
         shared.db.set_text_and_styles(message, &plain, &styles).await.map_err(|e| e.to_string())?;
     }
     // The bouncer's networks, from a first connection; a server that is not such a bouncer is one network.
-    let (mut control, _) = Link::open(&address, None).await?;
+    let (mut control, _) = within("the sign-in", Link::open(&address, None)).await?;
     control.send("BOUNCER LISTNETWORKS").await?;
     let mut ids = Vec::new();
     let mut names = Vec::new();
-    loop {
+    within("with its networks", async { loop {
         let line = control.next().await?;
         match line.command.as_str() {
             "BOUNCER" if line.params.first().is_some_and(|p| p == "NETWORK") => {
@@ -480,16 +507,16 @@ async fn session(shared: &Arc<Shared>, account: i64, address: &str, commands: &m
             "FAIL" | "421" => break,
             _ => {},
         }
-    }
+    } Ok(()) }).await?;
     drop(control);
     let mut networks = Vec::new();
     if ids.is_empty() {
-        let (link, nick) = Link::open(&address, None).await?;
-        networks.push(Network { id: "0".into(), link, nick, sent: VecDeque::new(), batches: HashMap::new() });
+        let (link, nick) = within("the sign-in", Link::open(&address, None)).await?;
+        networks.push(Network { id: "0".into(), link, nick, sent: VecDeque::new(), batches: HashMap::new(), heard_at: tokio::time::Instant::now(), pinged: false });
     }
     for id in &ids {
-        let (link, nick) = Link::open(&address, Some(id)).await?;
-        networks.push(Network { id: id.clone(), link, nick, sent: VecDeque::new(), batches: HashMap::new() });
+        let (link, nick) = within("the sign-in", Link::open(&address, Some(id))).await?;
+        networks.push(Network { id: id.clone(), link, nick, sent: VecDeque::new(), batches: HashMap::new(), heard_at: tokio::time::Instant::now(), pinged: false });
     }
     let label = networks.iter().zip(names.iter().map(String::as_str).chain(std::iter::repeat(address.host.as_str()))).map(|(n, name)| format!("{} on {name}", n.nick)).collect::<Vec<_>>().join(", ");
     shared.db.set_account_label(account, &label).await.map_err(|e| e.to_string())?;
@@ -502,16 +529,32 @@ async fn session(shared: &Arc<Shared>, account: i64, address: &str, commands: &m
     shared.update(account, |s| s.state = State::Online);
     flush(shared, account, &mut networks).await?;
     loop {
+        // (the earliest a network's quiet calls for a PING, or for giving up on one sent)
+        let due = networks.iter().map(|n| n.heard_at + if n.pinged { QUIET + ANSWER } else { QUIET }).min().unwrap_or_else(|| tokio::time::Instant::now() + QUIET);
         let happened = {
             let mut reads: Vec<_> = networks.iter_mut().enumerate().map(|(i, n)| Box::pin(async move { (i, n.link.next().await) })).collect();
             tokio::select! {
                 ((i, line), _, _) = futures::future::select_all(reads.iter_mut()) => Happened::Line(i, line),
                 command = commands.recv() => Happened::Command(command),
+                _ = tokio::time::sleep_until(due) => Happened::Quiet,
             }
         };
         match happened {
+            Happened::Quiet => {
+                let now = tokio::time::Instant::now();
+                for network in &mut networks {
+                    if network.pinged && now >= network.heard_at + QUIET + ANSWER {
+                        return Err("the bouncer stopped answering".into());
+                    }
+                    if !network.pinged && now >= network.heard_at + QUIET {
+                        network.link.send("PING :gink").await?;
+                        network.pinged = true;
+                    }
+                }
+            },
             Happened::Line(i, line) => {
                 let line = line?;
+                (networks[i].heard_at, networks[i].pinged) = (tokio::time::Instant::now(), false);
                 let message = line.command == "PRIVMSG" || line.command == "NOTICE";
                 heard(shared, account, &mut networks[i], line).await?;
                 if message {
