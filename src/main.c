@@ -177,6 +177,7 @@ typedef struct {
     // What the core last reported, read again when an event says it changed. The strings belong to
     // the core and stay valid until the same list is read again.
     gsc_account accounts[MAX_ACCOUNTS];
+    Uint64 down_since[MAX_ACCOUNTS];  // when each account was last seen not online, 0 while it is
     gsc_conversation conversations[MAX_CONVERSATIONS];
     // For each group without a picture of its own, the members its picture is made of instead.
     struct { int n; struct { char key[80], name[64]; int person; int64_t picture_ms; } face[FACES]; } faces[MAX_CONVERSATIONS];
@@ -590,6 +591,9 @@ static bool settings_row(app *a, gs_ui *ui, gs_rect *at) {
     return changed;
 }
 
+// An account not online for this long has missed its reconnections, which come every 30 seconds.
+#define DOWN_WARN_MS (5 * 60 * 1000)
+
 static void health(app *a, gs_ui *ui, gs_rect *r) {
     static const char *const states[] = { "waiting to be linked", "connecting", "catching up", "online", "offline" };
     const gs_ui_style *s = gs_ui_style_of(ui);
@@ -623,7 +627,12 @@ static void health(app *a, gs_ui *ui, gs_rect *r) {
         // messages are in the log and in the conversations themselves)
         char line[160];
         snprintf(line, sizeof line, "%s    %s", ac->protocol, states[ac->state]);
-        float w = gs_ui_text(ui, row, line, s->small_px, ac->state == GSC_ACCOUNT_ONLINE ? s->text : s->muted, -1);
+        // (an account kept from its messages for longer than a reconnection takes stands out)
+        bool down = ac->state != GSC_ACCOUNT_ONLINE && ac->state != GSC_ACCOUNT_SIGNING_IN;
+        if (!down) a->down_since[i] = 0;
+        else if (!a->down_since[i]) a->down_since[i] = SDL_GetTicks();
+        bool long_down = down && SDL_GetTicks() - a->down_since[i] >= DOWN_WARN_MS;
+        float w = gs_ui_text(ui, row, line, s->small_px, long_down ? s->warning : ac->state == GSC_ACCOUNT_ONLINE ? s->text : s->muted, -1);
         gs_cut_left(&row, w + 16);
         if (ac->error[0]) gs_ui_text(ui, row, ac->error, s->small_px, s->warning, -1);
     }
@@ -3015,6 +3024,11 @@ int main(int argc, char **argv) {
             SDL_PushEvent(&move), SDL_PushEvent(&wheel);
             wait = 0;
         }
+        for (int i = 0; i < a.naccounts; i++)  // (an account's state turns to the warning colour when its time comes)
+            if (a.down_since[i] && now - a.down_since[i] < DOWN_WARN_MS) {
+                int left = (int)(a.down_since[i] + DOWN_WARN_MS - now) + 1;
+                wait = wait < 0 || left < wait ? left : wait;
+            }
         if (a.typing_until > now) {  // (the typing notice is taken down when its time runs out)
             int left = (int)(a.typing_until - now) + 1;
             wait = wait < 0 || left < wait ? left : wait;
