@@ -68,6 +68,7 @@ pub struct GscConversation {
     person: c_int,
     last_sender: *const c_char,
     admin: bool,
+    unread_mentions: c_int,
 }
 
 #[repr(C)]
@@ -311,6 +312,7 @@ pub unsafe extern "C" fn gsc_conversations(core: *mut Core, out: *mut GscConvers
             person: c.person as c_int,
             last_sender: lend(&mut core.conversation_strings, &c.last_sender),
             admin: c.admin,
+            unread_mentions: c.unread_mentions as c_int,
         };
         unsafe { out.add(i).write(conversation) };
     }

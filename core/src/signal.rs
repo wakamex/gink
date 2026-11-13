@@ -765,6 +765,12 @@ async fn store_content(shared: &Arc<Shared>, account: i64, client: &Client, cont
         .add_message(&NewMessage { conversation, outgoing, sender: &sender, sent_ms, received_ms: now_ms(), text: body, kind: TEXT, quote, expire_s, expire_start_ms })
         .await
         .map_err(text)?;
+    if let Some(stored) = stored
+        && !outgoing
+        && names_me(&message.body_ranges, client.registration_data().service_ids.aci.into())
+    {
+        shared.db.set_mentions_me(stored).await.map_err(text)?;
+    }
     if let Some(message) = stored {
         if clear.is_some() {
             shared.db.set_clear(message, clear.as_deref()).await.map_err(text)?;
@@ -997,6 +1003,15 @@ fn mention_ranges(body: &str, mentions: &[(String, usize, usize)]) -> (String, V
 
 /// The text with each mention, which arrives as a placeholder character, replaced by "@" and the
 /// person's name.
+/// Whether a message's ranges mention the account.
+fn names_me(ranges: &[BodyRange], me: Uuid) -> bool {
+    ranges.iter().any(|range| match &range.associated_value {
+        Some(AssociatedValue::MentionAci(id)) => Uuid::parse_str(id).ok() == Some(me),
+        Some(AssociatedValue::MentionAciBinary(id)) => Uuid::from_slice(id).ok() == Some(me),
+        _ => false,
+    })
+}
+
 async fn with_mentions(client: &Client, body: &str, ranges: &[BodyRange]) -> String {
     let mut names = vec![];
     for range in ranges {

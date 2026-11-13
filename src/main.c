@@ -1049,6 +1049,12 @@ static void hit_list(app *a, gs_ui *ui, gs_rect r) {
 // Narrower than this, the window shows the list or one conversation, filling it, with a way back.
 #define NARROW 560
 
+// A muted conversation's unread messages are counted in grey and its name is not lit, as Telegram and
+// WhatsApp show them, unless one of them mentions the account.
+static bool quiet(const gsc_conversation *c) {
+    return c->muted && !c->unread_mentions;
+}
+
 // The list drawn as pictures alone, each with its count of unread messages on its corner.
 static void conversation_icons(app *a, gs_ui *ui, gs_rect r) {
     const gs_ui_style *s = gs_ui_style_of(ui);
@@ -1066,7 +1072,7 @@ static void conversation_icons(app *a, gs_ui *ui, gs_rect r) {
         snprintf(count, sizeof count, c->unread > 99 ? "99+" : "%d", c->unread);
         float w = gs_ui_text_width(ui, count, s->small_px) + 8, h = gs_ui_line_height(ui, s->small_px);
         gs_rect badge = { row.x + row.w - w - 2, row.y + 2, w, h };
-        gs_ui_fill(ui, badge, c->muted ? s->muted : s->accent);
+        gs_ui_fill(ui, badge, quiet(c) ? s->muted : s->accent);
         gs_ui_text(ui, badge, count, s->small_px, s->accent_text, 0);
     }
     gs_ui_clip(ui, NULL);
@@ -1104,13 +1110,13 @@ static void conversation_list(app *a, gs_ui *ui, gs_rect r) {
             char count[16];
             snprintf(count, sizeof count, "%d", c->unread);
             gs_rect badge = gs_cut_right(&top, gs_ui_text_width(ui, count, s->small_px) + 12);
-            gs_ui_fill(ui, badge, s->accent);
+            gs_ui_fill(ui, badge, quiet(c) ? s->muted : s->accent);
             gs_ui_text(ui, badge, count, s->small_px, s->accent_text, 0);
             gs_cut_right(&top, 6);
         }
         if (c->muted) gs_cut_right(&top, 6), gs_ui_text(ui, gs_cut_right(&top, gs_ui_text_width(ui, "muted", s->small_px)), "muted", s->small_px, s->muted, 1);
         if (c->request) gs_cut_right(&top, 6), gs_ui_text(ui, gs_cut_right(&top, gs_ui_text_width(ui, "request", s->small_px)), "request", s->small_px, s->warning, 1);
-        gs_ui_text(ui, top, c->title, s->text_px, c->unread ? s->accent : s->text, -1);
+        gs_ui_text(ui, top, c->title, s->text_px, c->unread && !quiet(c) ? s->accent : s->text, -1);
         char preview[256];  // (the newest message's beginning, on one line)
         snprintf(preview, sizeof preview, c->last_sender[0] ? "%s: %s" : "%s%s", c->last_sender[0] ? c->last_sender : "", c->last_text);
         for (char *p = preview; *p; p++)

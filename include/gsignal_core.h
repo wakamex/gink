@@ -75,6 +75,7 @@ typedef struct {
     int person;             // the number its colour goes by: with one person, theirs as gsc_message has it; a group's own, from the same count; -1 for the account's notes and for one nothing was written in
     const char *last_sender;  // in a group, who wrote the newest message ("me" for the account); "" elsewhere
     bool admin;             // a group the account administers, which may change who is in it
+    int unread_mentions;    // of the unread messages, those that name the account (on IRC, its nick)
 } gsc_conversation;
 
 // Conversations, newest first; those without messages follow, by title. Writes up to max and

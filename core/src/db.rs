@@ -232,6 +232,9 @@ UPDATE accounts SET storage_version = NULL;
     "UPDATE accounts SET contacts_ms = 0;",
     // A conversation with someone no name was known for was titled with their identifier.
     "UPDATE conversations SET title = 'Unknown contact' WHERE kind = 0 AND title = key;",
+    // Whether a received message names the account (a mention, or on IRC its nick), so that a muted
+    // conversation still stands out for it.
+    "ALTER TABLE messages ADD COLUMN mentions_me INTEGER NOT NULL DEFAULT 0;",
 ];
 
 pub struct Account {
@@ -263,6 +266,8 @@ pub struct Conversation {
     pub person: i64,
     /// For a group, whether the account is one of its administrators.
     pub admin: bool,
+    /// Of the unread messages, those that mention the account.
+    pub unread_mentions: i64,
 }
 
 /// A message found by `Db::search`.
@@ -614,14 +619,15 @@ impl Db {
                     COALESCE(c.colour, (SELECT colour FROM people WHERE c.kind = 0 AND account_id = c.account_id AND key = c.key), -1),
                     c.accepted = 0,
                     CASE WHEN c.kind = 1 AND m.outgoing = 0 AND m.kind = 0 THEN COALESCE(NULLIF((SELECT name FROM people WHERE account_id = c.account_id AND key = m.sender), ''), 'Someone') WHEN c.kind = 1 AND m.outgoing = 1 THEN 'me' ELSE '' END,
-                    c.admin
+                    c.admin,
+                    (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id AND outgoing = 0 AND read_ms IS NULL AND mentions_me = 1)
              FROM conversations c
              LEFT JOIN messages m ON m.id = (SELECT MAX(id) FROM messages WHERE conversation_id = c.id)
              ORDER BY COALESCE(m.id, 0) DESC, c.title COLLATE NOCASE",
         )
         .fetch_all(&self.0)
         .await?;
-        Ok(rows.iter().map(|r| Conversation { id: r.get(0), account: r.get(1), key: r.get(2), kind: r.get(3), title: r.get(4), last_ms: r.get(5), last_text: r.get(6), unread: r.get(7), muted: r.get(8), avatar_ms: r.get(9), person: r.get(10), request: r.get(11), last_sender: r.get(12), admin: r.get(13) }).collect())
+        Ok(rows.iter().map(|r| Conversation { id: r.get(0), account: r.get(1), key: r.get(2), kind: r.get(3), title: r.get(4), last_ms: r.get(5), last_text: r.get(6), unread: r.get(7), muted: r.get(8), avatar_ms: r.get(9), person: r.get(10), request: r.get(11), last_sender: r.get(12), admin: r.get(13), unread_mentions: r.get(14) }).collect())
     }
 
     /// Notes whether the account is an administrator of a group. Returns whether that changed.
@@ -1151,6 +1157,10 @@ impl Db {
 
     /// Keeps a message's text as it was written beside the text with its hidden parts covered, or
     /// forgets it when nothing in it is hidden.
+    pub async fn set_mentions_me(&self, message: i64) -> sqlx::Result<()> {
+        sqlx::query("UPDATE messages SET mentions_me = 1 WHERE id = ?").bind(message).execute(&self.0).await.map(|_| ())
+    }
+
     /// Keeps the styles of a message's text, as `cover_spoilers` gives them ("" for none).
     pub async fn set_styles(&self, message: i64, styles: &str) -> sqlx::Result<()> {
         sqlx::query("UPDATE messages SET styles = NULLIF(?2, '') WHERE id = ?1").bind(message).bind(styles).execute(&self.0).await?;

@@ -257,6 +257,13 @@ pub fn formatted(text: &str) -> (String, String) {
     (plain, styles)
 }
 
+/// Whether a text names a nick, as a word of its own in any case, as IRC clients highlight it.
+pub fn names(text: &str, nick: &str) -> bool {
+    let (text, nick) = (text.to_lowercase(), nick.to_lowercase());
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || "_-[]\\`^{}|".contains(c));
+    !nick.is_empty() && text.match_indices(&nick).any(|(at, _)| !word(text[..at].chars().next_back()) && !word(text[at + nick.len()..].chars().next()))
+}
+
 fn is_channel(target: &str) -> bool {
     target.starts_with(['#', '&', '!', '+'])
 }
@@ -680,6 +687,9 @@ async fn heard(shared: &Arc<Shared>, account: i64, network: &mut Network, line: 
             let key = from.to_lowercase();
             let sender = if outgoing { "" } else { key.as_str() };
             if let Some(id) = store(shared, conversation, outgoing, sender, sent_ms, &text).await? {
+                if !outgoing && names(&text, &network.nick) {
+                    shared.db.set_mentions_me(id).await.map_err(|e| e.to_string())?;
+                }
                 if !styles.is_empty() {
                     shared.db.set_styles(id, &styles).await.map_err(|e| e.to_string())?;
                 }
@@ -793,6 +803,14 @@ mod tests {
         assert_eq!(formatted("\u{4}ff00aaX\u{11}code").0, "Xcode");
         assert_eq!(formatted("\u{3},5 keeps a comma").0, ",5 keeps a comma");
         assert_eq!(formatted("plain").1, "");
+    }
+
+    #[test]
+    fn a_nick_is_named_as_a_word() {
+        assert!(names("downloader712: are you there?", "downloader712"));
+        assert!(names("thanks Downloader712!", "downloader712"));
+        assert!(!names("downloader7123 said", "downloader712"));
+        assert!(!names("xdownloader712", "downloader712"));
     }
 
     #[test]
