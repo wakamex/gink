@@ -162,11 +162,10 @@ async fn session(shared: &Arc<Shared>, account: i64, device_name: &str, commands
         if !kept.is_empty() {
             crate::log::line(&format!("account {account}: dealing with {} messages received before the program last ended", kept.len()));
         }
-        // (what the account sent from another device comes back from the client's store as if
-        // someone had written it under the account's own key, and is left: its sending device has
-        // it, and the copy sent here arrives again from the service if it was never acknowledged)
-        let own = client.registration_data().service_ids.aci.to_string();
-        for content in kept.iter().filter(|c| c.metadata.sender.service_id_string() != own) {
+        // (in the order they arrived, the copies of what the account sent from its other devices
+        // among them: the store keeps each whole, and the service, told they arrived, does not send
+        // them again)
+        for content in &kept {
             if let Err(error) = store_content(shared, account, &client, content).await {
                 crate::log::line(&format!("account {account}: a message kept from before could not be dealt with: {error}"));
             }

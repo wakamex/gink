@@ -652,19 +652,30 @@ class SignalLive(unittest.TestCase):
 
     def test_26_a_message_received_and_not_dealt_with_is_dealt_with_on_the_next_start(self):
         title = self.peer_conversation()
-        text = f"gsignal test {uuid.uuid4().hex[:12]}"
+        tag = uuid.uuid4().hex[:12]
+        text, mine, after = f"gsignal test {tag}", f"gsignal test {tag} mine", f"gsignal test {tag} after"
         # A run that takes messages off the connection, which tells the service they arrived, and
-        # goes no further with them: what being ended at that moment leaves behind.
+        # goes no further with them: what being ended at that moment leaves behind. Between the
+        # peer's two messages the account's primary device writes one, which reaches this device
+        # as a copy of what it sent, and must come back in its place.
         held = Driver(env={"GINK_HOLD_RECEIVED": "1"})
         self.addCleanup(held.stop)
         self.assertIsNotNone(held.wait(r"^account \d+ online", 60), "the account did not come online")
         rpc(self.peer_socket, "send", {"recipient": [self.account], "message": text})
-        self.assertIsNone(held.wait(rf"^message in .* \| {re.escape(text)}$", 8), "the run that was to hold the message dealt with it")
+        time.sleep(2)
+        rpc(self.account_socket, "send", {"recipient": [self.peer], "message": mine})
+        time.sleep(2)
+        rpc(self.peer_socket, "send", {"recipient": [self.account], "message": after})
+        self.assertIsNone(held.wait(rf"^message (in|out) .* \| {re.escape(after)}$", 8), "the run that was to hold the messages dealt with them")
         held.stop()
         with open(os.path.join(DATA, "gsignal.log"), encoding="utf-8", errors="replace") as f:
             before = f.read().count("messages received before the program last ended")
         driver = self.online()
-        self.assertIsNotNone(driver.wait(rf"^message in {re.escape(title)} \| .* \| {re.escape(text)}$", 20), "the message the service had already handed over was lost")
+        self.assertIsNotNone(driver.wait(rf"^message in {re.escape(title)} \| .* \| {re.escape(after)}$", 20), "the message the service had already handed over was lost")
+        lines = [line for _, line in driver.lines]
+        order = [i for i, line in enumerate(lines) for t in (text, mine, after) if line.endswith(f"| {t}") and line.startswith("message ")]
+        self.assertTrue(any(l.startswith(f"message out {title} ") and l.endswith(f"| {mine}") for l in lines), "the account's own message, kept as a copy from its primary device, was lost")
+        self.assertEqual(order, sorted(order), "the kept messages did not come back in the order they arrived")
         # (the log says it came from what was kept, not from the service a second time)
         with open(os.path.join(DATA, "gsignal.log"), encoding="utf-8", errors="replace") as f:
             self.assertGreater(f.read().count("messages received before the program last ended"), before, "the message was not taken from what the client had kept")
