@@ -139,9 +139,13 @@ async fn session(shared: &Arc<Shared>, account: i64, device_name: &str, commands
     // which the other person can no longer decrypt.
     let sessions = client.sessions();
     let (received_tx, mut received_rx) = mpsc::unbounded_channel();
+    let watch = Watch::start(account);
+    let _done = watch.clone().done_on_drop();
+    let receiving_watch = watch.clone();
     let _receiving = AbortOnDrop(tokio::task::spawn_local(async move {
         pin_mut!(stream);
         while let Some(received) = stream.next().await {
+            receiving_watch.received();
             if received_tx.send(received).is_err() {
                 break;
             }
@@ -229,6 +233,7 @@ async fn session(shared: &Arc<Shared>, account: i64, device_name: &str, commands
     let mut again = None;
     loop {
         // Messages whose disappearing timer has run out go first, then the wait is until the next one.
+        watch.at("removing expired messages");
         let now = now_ms();
         for conversation in shared.db.remove_expired(account, now).await.map_err(text)? {
             shared.push(Event::ConversationChanged { account, conversation });
@@ -237,11 +242,13 @@ async fn session(shared: &Arc<Shared>, account: i64, device_name: &str, commands
             Some(at) => Duration::from_millis((at - now).max(0) as u64),
             None => Duration::from_secs(3600),
         };
+        watch.at(WAITING);
         tokio::select! {
             _ = tokio::time::sleep(next_expiry) => {}
             // What was written while offline is sent once the account is caught up, and a sending
             // that failed is tried again a little later.
             _ = tokio::time::sleep_until(again.unwrap_or_else(tokio::time::Instant::now)), if again.is_some() => {
+                watch.at("sending what waits again");
                 let _held = sessions.lock().await;
                 let result = flush(shared, account, &mut client).await;
                 again = result.is_err().then(|| tokio::time::Instant::now() + SEND_RETRY);
@@ -264,6 +271,7 @@ async fn session(shared: &Arc<Shared>, account: i64, device_name: &str, commands
                     conversations_from_store(shared, account, &client).await
                 },
                 Some(Received::Content(content)) => {
+                    watch.at("storing a received message");
                     // (a message that was dealt with is taken off the client's store; one that
                     // failed stays there, to be tried once more at the next start)
                     // (GINK_HOLD_RECEIVED=1 leaves every message where the client kept it, as
@@ -279,6 +287,7 @@ async fn session(shared: &Arc<Shared>, account: i64, device_name: &str, commands
                     shared.update(account, |s| s.last_received_ms = now_ms());
                 }
                 Some(Received::DecryptionError { sender, device, timestamp }) => {
+                    watch.at("mending a session");
                     shared.update(account, |s| (s.undecryptable, s.last_received_ms) = (s.undecryptable + 1, now_ms()));
                     let _held = sessions.lock().await;
                     let result = undecryptable(shared, account, &mut client, &sender, device, timestamp).await;
@@ -290,7 +299,7 @@ async fn session(shared: &Arc<Shared>, account: i64, device_name: &str, commands
                     shared.update(account, |s| s.error = result.err().unwrap_or_default());
                 }
             },
-            command = commands.recv() => { let _held = sessions.lock().await; match command {
+            command = commands.recv() => { watch.at("doing what the app asked"); let _held = sessions.lock().await; match command {
                 None => return Ok(()),
                 Some(Command::Flush) => {
                     let result = flush(shared, account, &mut client).await;
@@ -1571,5 +1580,62 @@ mod tests {
         let parts = vec![(3, 1, "@Ann".to_owned()), (9, 1, "@Bob".to_owned())];
         assert_eq!(replace_utf16(text, parts), "\u{1F600} @Ann and @Bob!");
         assert_eq!(replace_utf16("short", vec![(4, 5, "x".to_owned())]), "short");
+    }
+}
+
+/// What the account's loop is doing, watched from a thread of its own, so that a loop that stops
+/// says where: the log names the step it has been at for STALL and when the receiving task last
+/// handed it something. (A thread, so it still runs if the account's own thread is the one stuck.)
+struct Watch {
+    account: i64,
+    step: std::sync::Mutex<(&'static str, std::time::Instant)>,
+    received: std::sync::Mutex<std::time::Instant>,
+    done: std::sync::atomic::AtomicBool,
+}
+
+const WAITING: &str = "waiting";
+const STALL: Duration = Duration::from_secs(300);
+
+impl Watch {
+    fn start(account: i64) -> Arc<Watch> {
+        let now = std::time::Instant::now();
+        let watch = Arc::new(Watch { account, step: std::sync::Mutex::new((WAITING, now)), received: std::sync::Mutex::new(now), done: Default::default() });
+        let watching = watch.clone();
+        std::thread::Builder::new()
+            .name(format!("watch-{account}"))
+            .spawn(move || {
+                let mut told = None;
+                while !watching.done.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_secs(30));
+                    let (step, since) = *watching.step.lock().unwrap();
+                    let stuck = step != WAITING && since.elapsed() >= STALL;
+                    if stuck && told != Some(since) {
+                        let received = watching.received.lock().unwrap().elapsed().as_secs();
+                        crate::log::line(&format!("account {}: stuck {} s at {step}; the last received item came {received} s ago", watching.account, since.elapsed().as_secs()));
+                        told = Some(since);
+                    }
+                }
+            })
+            .expect("a thread");
+        watch
+    }
+
+    fn at(&self, step: &'static str) {
+        *self.step.lock().unwrap() = (step, std::time::Instant::now());
+    }
+
+    fn received(&self) {
+        *self.received.lock().unwrap() = std::time::Instant::now();
+    }
+
+    /// Ends the watching thread when the session ends.
+    fn done_on_drop(self: Arc<Self>) -> impl Drop {
+        struct Done(Arc<Watch>);
+        impl Drop for Done {
+            fn drop(&mut self) {
+                self.0.done.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        Done(self)
     }
 }
