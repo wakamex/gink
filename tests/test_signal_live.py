@@ -667,6 +667,10 @@ class SignalLive(unittest.TestCase):
         time.sleep(2)
         rpc(self.peer_socket, "send", {"recipient": [self.account], "message": after})
         self.assertIsNone(held.wait(rf"^message (in|out) .* \| {re.escape(after)}$", 8), "the run that was to hold the messages dealt with them")
+        # (and one this device sends, which the client's store keeps too, under the account's own key)
+        here = f"gsignal test {tag} here"
+        held.tell(f"send {title} | {here}")
+        self.assertIsNotNone(held.wait(rf"^message out {re.escape(title)} \|  \| {re.escape(here)}$", 20), "the message sent from this device was not held as sent")
         held.stop()
         with open(os.path.join(DATA, "gsignal.log"), encoding="utf-8", errors="replace") as f:
             before = f.read().count("messages received before the program last ended")
@@ -676,6 +680,7 @@ class SignalLive(unittest.TestCase):
         order = [i for i, line in enumerate(lines) for t in (text, mine, after) if line.endswith(f"| {t}") and line.startswith("message ")]
         self.assertTrue(any(l.startswith(f"message out {title} ") and l.endswith(f"| {mine}") for l in lines), "the account's own message, kept as a copy from its primary device, was lost")
         self.assertEqual(order, sorted(order), "the kept messages did not come back in the order they arrived")
+        self.assertFalse(any(l.startswith("message in ") and l.endswith(f"| {here}") for l in lines), "the message sent from this device came back as received")
         # (the log says it came from what was kept, not from the service a second time)
         with open(os.path.join(DATA, "gsignal.log"), encoding="utf-8", errors="replace") as f:
             self.assertGreater(f.read().count("messages received before the program last ended"), before, "the message was not taken from what the client had kept")

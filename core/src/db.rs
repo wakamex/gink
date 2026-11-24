@@ -235,6 +235,9 @@ UPDATE accounts SET storage_version = NULL;
     // Whether a received message names the account (a mention, or on IRC its nick), so that a muted
     // conversation still stands out for it.
     "ALTER TABLE messages ADD COLUMN mentions_me INTEGER NOT NULL DEFAULT 0;",
+    // What this device sent came back at the next start as a message received under the account's
+    // own key, kept beside the one held as sent.
+    "DELETE FROM messages WHERE outgoing = 0 AND kind = 0 AND sender != '' AND sender IN (SELECT self_key FROM accounts WHERE self_key IS NOT NULL);",
 ];
 
 pub struct Account {
