@@ -591,6 +591,15 @@ static bool settings_row(app *a, gs_ui *ui, gs_rect *at) {
     return changed;
 }
 
+// Renames a file, trying again for up to ten seconds: on Windows an antivirus holds a file it is
+// scanning, a freshly written one in particular, and a rename in that time fails.
+static bool rename_patiently(const char *from, const char *to) {
+    for (Uint64 until = SDL_GetTicks() + 10000;; SDL_Delay(250)) {
+        if (SDL_RenamePath(from, to)) return true;
+        if (!SDL_GetPathInfo(from, NULL) || SDL_GetTicks() >= until) return false;
+    }
+}
+
 // An account not online for this long has missed its reconnections, which come every 30 seconds.
 #define DOWN_WARN_MS (5 * 60 * 1000)
 
@@ -2701,7 +2710,7 @@ static int watch_over(int argc, char **argv, const char *dir) {
                 snprintf(to, sizeof to, "%s%.*s", folder, (int)strlen(names[i]) - 4, names[i]);
                 snprintf(bad, sizeof bad, "%s.bad", to);
                 SDL_RemovePath(bad);
-                SDL_RenamePath(to, bad), SDL_RenamePath(from, to);
+                rename_patiently(to, bad), rename_patiently(from, to);
             }
             SDL_free(names);
             char path[1100], skip[200];

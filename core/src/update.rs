@@ -233,22 +233,100 @@ async fn look(client: &reqwest::Client, server: &str, folder: &Path, usage: &str
     if fetched.is_empty() {
         return Ok(None);
     }
+    put_in_place(fetched).await?;
+    Ok(Some(build))
+}
+
+/// Each file goes aside as NAME.old and NAME.new takes its place. A file that cannot be put in place
+/// puts back every one this update already swapped, so the folder is never left without the
+/// program or with half a build.
+async fn put_in_place(fetched: Vec<(std::path::PathBuf, std::path::PathBuf)>) -> Result<(), String> {
+    let mut swapped: Vec<(std::path::PathBuf, std::path::PathBuf, bool)> = vec![];
     for (here, new) in fetched {
         let old = here.with_file_name(format!("{}.old", here.file_name().unwrap_or_default().to_string_lossy()));
         let _ = std::fs::remove_file(&old);
-        if here.exists() {
-            std::fs::rename(&here, &old).map_err(|e| format!("{}: {e}", here.display()))?;
+        let had = here.exists();
+        let step = async {
+            if had {
+                rename_patiently(&here, &old).await?;
+            }
+            if let Err(error) = rename_patiently(&new, &here).await {
+                if had {
+                    let _ = rename_patiently(&old, &here).await;
+                }
+                return Err(error);
+            }
+            Ok(())
+        };
+        if let Err(error) = step.await {
+            for (here, old, had) in swapped.into_iter().rev() {
+                let _ = std::fs::remove_file(&here);
+                if had {
+                    let _ = rename_patiently(&old, &here).await;
+                }
+            }
+            return Err(error);
         }
-        std::fs::rename(&new, &here).map_err(|e| format!("{}: {e}", here.display()))?;
+        swapped.push((here, old, had));
     }
-    Ok(Some(build))
+    Ok(())
 }
+
+/// Renames a file, trying again for up to RENAME_PATIENCE: on Windows an antivirus holds a file it
+/// is scanning, a freshly written one in particular, and a rename in that time fails.
+async fn rename_patiently(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
+    let until = std::time::Instant::now() + RENAME_PATIENCE;
+    loop {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) if std::time::Instant::now() >= until || error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!("{} to {}: {error}", from.display(), to.display()));
+            },
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
+        }
+    }
+}
+
+const RENAME_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::{Signer, SigningKey};
 
     use super::{File, manifest};
+
+    #[test]
+    fn a_file_that_cannot_be_put_in_place_puts_back_those_already_swapped() {
+        let dir = std::env::temp_dir().join(format!("gink-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("gink.exe"), dir.join("gink-core.exe"));
+        std::fs::write(&a, "old a").unwrap();
+        std::fs::write(&b, "old b").unwrap();
+        std::fs::write(dir.join("gink.exe.new"), "new a").unwrap();
+        // (the second file's new copy is missing, so it cannot be put in place)
+        let fetched = vec![(a.clone(), dir.join("gink.exe.new")), (b.clone(), dir.join("gink-core.exe.new"))];
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        assert!(runtime.block_on(super::put_in_place(fetched)).is_err());
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "old a");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "old b");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn files_that_can_be_put_in_place_are() {
+        let dir = std::env::temp_dir().join(format!("gink-swap-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("gink.exe");
+        std::fs::write(&a, "old a").unwrap();
+        std::fs::write(dir.join("gink.exe.new"), "new a").unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(super::put_in_place(vec![(a.clone(), dir.join("gink.exe.new"))])).unwrap();
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "new a");
+        assert_eq!(std::fs::read_to_string(dir.join("gink.exe.old")).unwrap(), "old a");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_manifest_is_taken_only_with_its_publishers_signature() {
